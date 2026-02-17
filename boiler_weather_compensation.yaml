@@ -138,6 +138,31 @@ blueprint:
           unit_of_measurement: "×"
           mode: slider
 
+    # ── API rate limiting ────────────────────────────────────────────────
+    min_change_threshold:
+      name: "Minimum Change Threshold"
+      description: "Only send a new temperature to the boiler if the target differs from the current setpoint by at least this many degrees. Reduces unnecessary API calls."
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    min_update_interval:
+      name: "Minimum Update Interval"
+      description: "Minimum time (minutes) between API calls to the boiler. Prevents exceeding cloud API rate limits."
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: "min"
+          mode: slider
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Automation definition
 # ═══════════════════════════════════════════════════════════════════════════
@@ -146,7 +171,7 @@ mode: restart
 trigger:
   # Periodic re-evaluation
   - platform: time_pattern
-    minutes: "/10"
+    minutes: "/30"
 
   # React to outdoor temperature changes
   - platform: state
@@ -222,6 +247,29 @@ action:
       target_flow: >-
         {{ [flow_min | float, [(base_flow | float - solar_offset | float), flow_design | float] | min] | max | round(0) | int }}
 
+  # ── Rate limiting: read current boiler setpoint & last update time ──────
+  - variables:
+      boiler_entity: !input boiler_climate
+      min_change: !input min_change_threshold
+      min_interval: !input min_update_interval
+      current_setpoint: "{{ state_attr(boiler_entity, 'temperature') | float(0) }}"
+      current_mode: "{{ states(boiler_entity) }}"
+      last_changed_sec: "{{ (as_timestamp(now()) - as_timestamp(states[boiler_entity].last_changed)) | int }}"
+      interval_ok: "{{ last_changed_sec >= (min_interval | int * 60) }}"
+      change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
+      # Should we turn off? (outdoor warm enough)
+      should_heat_off: "{{ t_out | float >= t_off | float }}"
+      # Mode change (off → heat or heat → off) always goes through
+      mode_change: >-
+        {% if should_heat_off and current_mode != 'off' %}true
+        {% elif not should_heat_off and current_mode == 'off' %}true
+        {% else %}false{% endif %}
+      should_update: "{{ mode_change == 'true' or (change_big_enough and interval_ok) }}"
+
+  # ── Skip if no meaningful change or too soon ───────────────────────────
+  - condition: template
+    value_template: "{{ should_update }}"
+
   # ── Apply to boiler ────────────────────────────────────────────────────
   - choose:
       # Outdoor temp warm enough → turn heating off
@@ -251,7 +299,9 @@ action:
       - service: system_log.write
         data:
           message: >-
-            Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }},
-            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C
+            Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
+            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C,
+            Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C,
+            LastCall={{ last_changed_sec }}s ago
             → Flow target={{ target_flow }}°C
           level: info
