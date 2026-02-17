@@ -1,0 +1,257 @@
+blueprint:
+  name: "Boiler Weather Compensation with Solar Gain"
+  description: >-
+    Adjusts boiler flow temperature based on outdoor temperature and sun
+    illuminance (lux). Uses the radiator nonlinearity exponent (0.78) from the
+    Vaillant/Kühne heat curves, but without coupling to any single room
+    temperature — ideal for multi-zone houses where each zone has its own
+    thermostat or TRV.
+
+    On sunny days, the flow temperature is reduced to prevent overheating from
+    solar gain through windows.
+
+    Reference:
+    https://protonsforbreakfast.wordpress.com/2024/10/16/vaillant-heat-pump-controls-part-1-the-heat-curves/
+  domain: automation
+  source_url: https://github.com/dlbogdan/boiler-outdoor-dep/blob/main/boiler_weather_compensation.yaml
+
+  input:
+    # ── Entity selection (proper UI pickers) ──────────────────────────────
+    outdoor_temp_sensor:
+      name: "Outdoor Temperature Sensor"
+      description: "Sensor that reports outdoor temperature in °C"
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    outdoor_lux_sensor:
+      name: "Outdoor Illuminance Sensor"
+      description: "Sensor that reports outdoor light level in lux"
+      selector:
+        entity:
+          domain: sensor
+          device_class: illuminance
+
+    boiler_climate:
+      name: "Boiler / Heating Climate Entity"
+      description: "Climate entity used to set the boiler flow temperature"
+      selector:
+        entity:
+          domain: climate
+
+    # ── Heat curve anchor points ──────────────────────────────────────────
+    design_outdoor_temp:
+      name: "Design Outdoor Temperature"
+      description: "Coldest outdoor temperature you expect (°C)"
+      default: -20
+      selector:
+        number:
+          min: -30
+          max: 5
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    design_flow_temp:
+      name: "Design Flow Temperature"
+      description: "Flow temperature needed on the coldest day (°C). Calibrated: 77 °C at -20 °C gives ~54 °C at 0 °C."
+      default: 77
+      selector:
+        number:
+          min: 30
+          max: 80
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    min_flow_temp:
+      name: "Minimum Flow Temperature"
+      description: "Floor for flow temperature, used at the heating-off threshold (°C)"
+      default: 25
+      selector:
+        number:
+          min: 15
+          max: 40
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    heating_off_outdoor_temp:
+      name: "Outdoor Temp - Heating Off"
+      description: "Above this outdoor temperature, heating turns off (°C)"
+      default: 18
+      selector:
+        number:
+          min: 10
+          max: 25
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    # ── Solar gain correction ─────────────────────────────────────────────
+    lux_threshold_low:
+      name: "Lux Threshold - Start Reduction"
+      description: "Illuminance (lux) at which solar offset begins"
+      default: 10000
+      selector:
+        number:
+          min: 0
+          max: 50000
+          step: 1000
+          unit_of_measurement: "lx"
+          mode: slider
+
+    lux_threshold_high:
+      name: "Lux Threshold - Max Reduction"
+      description: "Illuminance (lux) at which solar offset reaches maximum"
+      default: 40000
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 1000
+          unit_of_measurement: "lx"
+          mode: slider
+
+    lux_max_offset:
+      name: "Max Solar Offset"
+      description: "Maximum flow temperature reduction due to sun (°C)"
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    lux_multiplier:
+      name: "Lux Sensor Multiplier"
+      description: "Scale factor for the lux reading. Use >1 if the sensor is partially shaded (e.g. 2.0 = sensor reads half of real sun). Use <1 if sensor is over-exposed."
+      default: 1.0
+      selector:
+        number:
+          min: 0.1
+          max: 5.0
+          step: 0.1
+          unit_of_measurement: "×"
+          mode: slider
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Automation definition
+# ═══════════════════════════════════════════════════════════════════════════
+mode: restart
+
+trigger:
+  # Periodic re-evaluation
+  - platform: time_pattern
+    minutes: "/10"
+
+  # React to outdoor temperature changes
+  - platform: state
+    entity_id: !input outdoor_temp_sensor
+    id: outdoor_temp_change
+
+  # React to illuminance swings
+  - platform: state
+    entity_id: !input outdoor_lux_sensor
+    id: lux_change
+
+condition: []
+
+action:
+  # ── Resolve entity IDs from blueprint inputs ───────────────────────────
+  - variables:
+      outdoor_temp_entity: !input outdoor_temp_sensor
+      outdoor_lux_entity: !input outdoor_lux_sensor
+
+  # ── Check sensor availability before proceeding ────────────────────────
+  - condition: template
+    value_template: >-
+      {{ states(outdoor_temp_entity) not in ['unavailable', 'unknown']
+         and states(outdoor_lux_entity) not in ['unavailable', 'unknown'] }}
+
+  # ── Gather all inputs into variables ────────────────────────────────────
+  - variables:
+      # Sensor readings
+      t_out: "{{ states(outdoor_temp_entity) | float(10) }}"
+      lux_raw: "{{ states(outdoor_lux_entity) | float(0) }}"
+      lux_mult: !input lux_multiplier
+      lux: "{{ (lux_raw | float * lux_mult | float) | round(0) }}"
+
+      # Heat curve parameters
+      t_design: !input design_outdoor_temp
+      flow_design: !input design_flow_temp
+      flow_min: !input min_flow_temp
+      t_off: !input heating_off_outdoor_temp
+
+      # Solar parameters
+      lux_low: !input lux_threshold_low
+      lux_high: !input lux_threshold_high
+      max_solar_offset: !input lux_max_offset
+
+      # Radiator nonlinearity exponent (convection ΔT^1.3 → inverse ≈ 0.78)
+      b: 0.78
+
+  # ── Compute flow temperature ────────────────────────────────────────────
+  - variables:
+      # Base flow temp from heat curve
+      base_flow: >-
+        {% if t_out | float >= t_off | float %}
+          {{ flow_min }}
+        {% elif t_out | float <= t_design | float %}
+          {{ flow_design }}
+        {% else %}
+          {% set demand = (t_off | float - t_out | float) / (t_off | float - t_design | float) %}
+          {{ (flow_min | float + (flow_design | float - flow_min | float) * (demand ** b)) | round(1) }}
+        {% endif %}
+
+      # Solar gain offset
+      solar_offset: >-
+        {% if lux | float <= lux_low | float %}
+          0
+        {% elif lux | float >= lux_high | float %}
+          {{ max_solar_offset }}
+        {% else %}
+          {{ ((lux | float - lux_low | float) / (lux_high | float - lux_low | float) * max_solar_offset | float) | round(1) }}
+        {% endif %}
+
+  - variables:
+      # Final clamped target (integer for boiler)
+      target_flow: >-
+        {{ [flow_min | float, [(base_flow | float - solar_offset | float), flow_design | float] | min] | max | round(0) | int }}
+
+  # ── Apply to boiler ────────────────────────────────────────────────────
+  - choose:
+      # Outdoor temp warm enough → turn heating off
+      - conditions:
+          - condition: template
+            value_template: "{{ t_out | float >= t_off | float }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: !input boiler_climate
+            data:
+              hvac_mode: "off"
+          - service: system_log.write
+            data:
+              message: >-
+                Weather Comp: Outdoor {{ t_out }}°C ≥ threshold {{ t_off }}°C → heating OFF
+              level: info
+
+    # Otherwise → set calculated flow temperature
+    default:
+      - service: climate.set_temperature
+        target:
+          entity_id: !input boiler_climate
+        data:
+          temperature: "{{ target_flow }}"
+          hvac_mode: heat
+      - service: system_log.write
+        data:
+          message: >-
+            Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }},
+            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C
+            → Flow target={{ target_flow }}°C
+          level: info
