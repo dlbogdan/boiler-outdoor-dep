@@ -141,11 +141,33 @@ blueprint:
     # ── Heating demand boost ──────────────────────────────────────────────
     heating_demand_sensor:
       name: "Total Heating Demand Sensor (optional)"
-      description: "Sensor reporting total heating demand (0-100). Adds up to +5 °C to the flow temperature (1 °C per 20 units). Leave empty to disable."
+      description: "Sensor reporting total heating demand (0-100). Offsets the flow temperature relative to the neutral demand point. Leave empty to disable."
       default: ""
       selector:
         entity:
           domain: sensor
+
+    heating_demand_neutral:
+      name: "Demand Neutral Point"
+      description: "Demand value that produces zero offset. Below this the flow temp is reduced; above it is increased."
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 5
+          mode: slider
+
+    heating_demand_scale:
+      name: "Demand Units per °C"
+      description: "How many demand units correspond to 1 °C of offset (e.g. 10 = every 10 units above/below neutral adds/subtracts 1 °C)."
+      default: 10
+      selector:
+        number:
+          min: 5
+          max: 50
+          step: 5
+          mode: slider
 
     # ── Output clamp ─────────────────────────────────────────────────────
     max_flow_temp:
@@ -239,15 +261,19 @@ action:
       lux_high: !input lux_threshold_high
       max_solar_offset: !input lux_max_offset
 
-      # Heating demand boost
+      # Heating demand parameters
+      demand_neutral: !input heating_demand_neutral
+      demand_scale: !input heating_demand_scale
+
+      # Heating demand boost (can be negative)
       demand_raw: >-
         {% if heating_demand_entity | default('', true) | length > 0
            and states(heating_demand_entity) not in ['unavailable', 'unknown', ''] %}
           {{ states(heating_demand_entity) | float(0) }}
         {% else %}
-          0
+          {{ demand_neutral }}
         {% endif %}
-      demand_boost: "{{ [5, (demand_raw | float / 20) | round(1)] | min }}"
+      demand_boost: "{{ ((demand_raw | float - demand_neutral | float) / demand_scale | float) | round(1) }}"
 
       # Output clamp
       flow_max: !input max_flow_temp
