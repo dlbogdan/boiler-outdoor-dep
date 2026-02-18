@@ -1,6 +1,6 @@
 # Boiler Weather Compensation with Solar Gain
 
-A Home Assistant **blueprint** that automatically adjusts boiler flow temperature based on **outdoor temperature** and **sun illumination (lux)**. No room temperature setpoint is used — each zone manages its own temperature via TRVs/thermostats. The boiler simply produces water at the right temperature for the outdoor conditions.
+A Home Assistant **blueprint** that automatically adjusts boiler flow temperature based on **outdoor temperature**, **sun illumination (lux)**, and optionally **total heating demand**. No room temperature setpoint is used — each zone manages its own temperature via TRVs/thermostats. The boiler simply produces water at the right temperature for the outdoor conditions.
 
 All sensors and the boiler entity are selected via the UI with proper entity pickers — no YAML editing required.
 
@@ -30,10 +30,39 @@ On sunny days, solar radiation through windows provides free heating. The automa
 | Lux | Effect |
 |-----|--------|
 | < 10,000 lx | No reduction |
-| 10,000–40,000 lx | Linear ramp from 0 to max offset |
+| 10,000-40,000 lx | Linear ramp from 0 to max offset |
 | > 40,000 lx | Full reduction (default: −5 °C) |
 
 This prevents the common problem of overheating on cold but sunny days.
+
+### Heating Demand Offset (optional)
+
+An optional 0-100 heating demand sensor can further adjust the flow temperature. The offset is calculated relative to a configurable **neutral point** (default: 20) with a configurable **scale** (default: 10 units per °C):
+
+$$offset = \frac{demand - neutral}{scale}$$
+
+| Demand | Offset (defaults) |
+|--------|-------------------|
+| 0 | −2 °C |
+| 10 | −1 °C |
+| 20 (neutral) | 0 °C |
+| 50 | +3 °C |
+| 80 | +6 °C |
+| 100 | +8 °C |
+
+When no demand sensor is configured, the offset is zero. This feature allows the system to react to how much heat the house is actually requesting — for example from TRV/thermostat call-for-heat aggregation.
+
+### Output Clamping
+
+The final flow temperature is clamped between the **Minimum Flow Temperature** (floor) and a configurable **Maximum Flow Temperature** (default: 67 °C, adjustable 45-75 °C). This hard cap prevents the boiler from being driven to excessively high temperatures regardless of the heat curve or demand boost.
+
+### Rate Limiting
+
+To avoid excessive API calls (especially with cloud-connected boilers), updates are only sent when:
+- The calculated temperature differs from the current setpoint by at least the **Minimum Change Threshold** (default: 2 °C), **and**
+- At least the **Minimum Update Interval** (default: 30 min) has passed since the last update.
+
+Mode changes (heat ↔ off) always go through immediately.
 
 ## Sensors Required
 
@@ -44,6 +73,7 @@ You need two outdoor sensors and a controllable boiler in Home Assistant. You se
 | Outdoor Temperature Sensor | Your outdoor thermometer (device class: `temperature`) |
 | Outdoor Illuminance Sensor | Your outdoor lux sensor (device class: `illuminance`) |
 | Boiler Climate Entity | Your boiler / heat pump `climate` entity |
+| Heating Demand Sensor | *(optional)* A 0-100 demand sensor |
 
 ## Installation
 
@@ -84,6 +114,13 @@ All parameters are set when creating the automation from the blueprint (and can 
 | Lux Low Threshold | 10,000 lx | Illuminance where solar offset begins |
 | Lux High Threshold | 40,000 lx | Illuminance where solar offset is at maximum |
 | Max Solar Offset | 5 °C | Maximum flow temp reduction due to sun |
+| Lux Sensor Multiplier | 1.0× | Scale factor for lux sensor (use >1 if sensor is shaded) |
+| Heating Demand Sensor | *(none)* | Optional 0-100 demand sensor entity |
+| Demand Neutral Point | 20 | Demand value producing zero offset |
+| Demand Units per °C | 10 | How many demand units equal 1 °C of offset |
+| Max Flow Temperature | 67 °C | Hard upper limit for calculated flow temperature |
+| Min Change Threshold | 2 °C | Minimum setpoint change to trigger an API call |
+| Min Update Interval | 30 min | Minimum time between boiler API calls |
 
 ## Dashboard Example
 
@@ -96,7 +133,8 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 3. If the house is **too cold** on cold days → increase Design Flow Temp.
 4. If the house is **too warm** on cold days → decrease Design Flow Temp.
 5. If the house **overheats on sunny days** → decrease lux thresholds or increase max solar offset.
-6. Monitor the automation traces to verify sensible flow temperature values before relying on it.
+6. If you have a **demand sensor**, adjust the neutral point and scale to match your system's behavior. A lower neutral means more aggressive boosting; a higher scale means gentler response.
+7. Monitor the automation traces to verify sensible flow temperature values before relying on it.
 
 ## Files
 
@@ -107,6 +145,6 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 
 ## References
 
-- [Vaillant Heat Pump Controls: Part 1 – The Heat Curves](https://protonsforbreakfast.wordpress.com/2024/10/16/vaillant-heat-pump-controls-part-1-the-heat-curves/)
+- [Vaillant Heat Pump Controls: Part 1 - The Heat Curves](https://protonsforbreakfast.wordpress.com/2024/10/16/vaillant-heat-pump-controls-part-1-the-heat-curves/)
 - [Part 3: Formulas and Spreadsheet](https://protonsforbreakfast.wordpress.com/2024/10/18/vaillant-heat-pump-controls-part-3-formulas-and-spreadsheet/)
 - [André Kühne's formula derivation](https://community.openenergymonitor.org/t/vaillant-arotherm-owners-thread/21891/281)
