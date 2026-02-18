@@ -138,6 +138,28 @@ blueprint:
           unit_of_measurement: "×"
           mode: slider
 
+    # ── Heating demand boost ──────────────────────────────────────────────
+    heating_demand_sensor:
+      name: "Total Heating Demand Sensor (optional)"
+      description: "Sensor reporting total heating demand (0-100). Adds up to +5 °C to the flow temperature (1 °C per 20 units). Leave empty to disable."
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    # ── Output clamp ─────────────────────────────────────────────────────
+    max_flow_temp:
+      name: "Maximum Flow Temperature"
+      description: "Hard upper limit for the calculated flow temperature (°C)"
+      default: 67
+      selector:
+        number:
+          min: 45
+          max: 75
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
     # ── API rate limiting ────────────────────────────────────────────────
     min_change_threshold:
       name: "Minimum Change Threshold"
@@ -190,6 +212,7 @@ action:
   - variables:
       outdoor_temp_entity: !input outdoor_temp_sensor
       outdoor_lux_entity: !input outdoor_lux_sensor
+      heating_demand_entity: !input heating_demand_sensor
 
   # ── Check sensor availability before proceeding ────────────────────────
   - condition: template
@@ -215,6 +238,19 @@ action:
       lux_low: !input lux_threshold_low
       lux_high: !input lux_threshold_high
       max_solar_offset: !input lux_max_offset
+
+      # Heating demand boost
+      demand_raw: >-
+        {% if heating_demand_entity | default('', true) | length > 0
+           and states(heating_demand_entity) not in ['unavailable', 'unknown', ''] %}
+          {{ states(heating_demand_entity) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      demand_boost: "{{ [5, (demand_raw | float / 20) | round(1)] | min }}"
+
+      # Output clamp
+      flow_max: !input max_flow_temp
 
       # Radiator nonlinearity exponent (convection ΔT^1.3 → inverse ≈ 0.78)
       b: 0.78
@@ -245,7 +281,8 @@ action:
   - variables:
       # Final clamped target (integer for boiler)
       target_flow: >-
-        {{ [flow_min | float, [(base_flow | float - solar_offset | float), flow_design | float] | min] | max | round(0) | int }}
+        {% set raw = base_flow | float - solar_offset | float + demand_boost | float %}
+        {{ [flow_min | float, [raw, flow_max | float] | min] | max | round(0) | int }}
 
   # ── Rate limiting: read current boiler setpoint & last update time ──────
   - variables:
@@ -300,8 +337,8 @@ action:
         data:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
-            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C,
-            Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C,
+            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C, DemandBoost=+{{ demand_boost }}°C,
+            MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C,
             LastCall={{ last_changed_sec }}s ago
             → Flow target={{ target_flow }}°C
           level: info
