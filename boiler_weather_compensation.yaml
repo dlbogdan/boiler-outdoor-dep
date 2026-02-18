@@ -291,8 +291,8 @@ action:
       min_interval: !input min_update_interval
       current_setpoint: "{{ state_attr(boiler_entity, 'temperature') | float(0) }}"
       current_mode: "{{ states(boiler_entity) }}"
-      last_changed_sec: "{{ (as_timestamp(now()) - as_timestamp(states[boiler_entity].last_changed)) | int }}"
-      interval_ok: "{{ last_changed_sec >= (min_interval | int * 60) }}"
+      last_updated_sec: "{{ (as_timestamp(now()) - as_timestamp(states[boiler_entity].last_updated)) | int }}"
+      interval_ok: "{{ last_updated_sec >= (min_interval | int * 60) }}"
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
       # Should we turn off? (outdoor warm enough)
       should_heat_off: "{{ t_out | float >= t_off | float }}"
@@ -339,6 +339,6 @@ action:
             Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
             Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C, DemandBoost=+{{ demand_boost }}°C,
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C,
-            LastCall={{ last_changed_sec }}s ago
+            LastCall={{ last_updated_sec }}s ago
             → Flow target={{ target_flow }}°C
           level: info
