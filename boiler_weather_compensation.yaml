@@ -306,10 +306,12 @@ action:
         {% endif %}
 
   - variables:
+      # Raw target before clamping (used to detect "no real demand")
+      target_flow_raw: >-
+        {{ (base_flow | float - solar_offset | float + demand_boost | float) | round(1) }}
       # Final clamped target (integer for boiler)
       target_flow: >-
-        {% set raw = base_flow | float - solar_offset | float + demand_boost | float %}
-        {{ [flow_min | float, [raw, flow_max | float] | min] | max | round(0) | int }}
+        {{ [flow_min | float, [target_flow_raw | float, flow_max | float] | min] | max | round(0) | int }}
 
   # ── Rate limiting: read current boiler setpoint ─────────────────────
   - variables:
@@ -318,12 +320,15 @@ action:
       current_setpoint: "{{ state_attr(boiler_entity, 'temperature') | float(0) }}"
       current_mode: "{{ states(boiler_entity) }}"
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
-      # Should we turn off? (outdoor warm enough)
-      should_heat_off: "{{ t_out | float >= t_off | float }}"
-      # Should we turn on? (outdoor cold enough — below the lower hysteresis threshold)
-      should_heat_on: "{{ t_out | float < t_on | float }}"
+      # Should we turn off? (outdoor warm enough OR calculated flow ≤ minimum)
+      should_heat_off: "{{ t_out | float >= t_off | float or target_flow_raw | float <= flow_min | float }}"
+      # Should we turn on? (outdoor cold enough AND calculated flow is above minimum —
+      # prevents toggle when it's cold but solar gain makes heating pointless)
+      should_heat_on: "{{ t_out | float < t_on | float and target_flow_raw | float > flow_min | float }}"
       # Dead zone: between t_on and t_off → maintain current state
       in_dead_zone: "{{ not should_heat_off and not should_heat_on }}"
+      # Calculated flow too low → treat like outdoor-warm-enough
+      flow_below_min: "{{ target_flow_raw | float <= flow_min | float }}"
       # Mode change (off → heat or heat → off) always goes through
       mode_change: >-
         {% if should_heat_off and current_mode != 'off' %}true
@@ -353,6 +358,22 @@ action:
             data:
               message: >-
                 Weather Comp: Outdoor {{ t_out }}°C ≥ off-threshold {{ t_off }}°C → heating OFF (on-threshold {{ t_on }}°C)
+              level: info
+
+      # Calculated flow temp at or below minimum → no real demand, turn off
+      - conditions:
+          - condition: template
+            value_template: "{{ flow_below_min }}"
+        sequence:
+          - service: climate.set_hvac_mode
+            target:
+              entity_id: !input boiler_climate
+            data:
+              hvac_mode: "off"
+          - service: system_log.write
+            data:
+              message: >-
+                Weather Comp: Calculated flow {{ target_flow_raw }}°C ≤ min {{ flow_min }}°C → no demand, heating OFF
               level: info
 
       # Dead zone: between t_on and t_off while currently off → stay off

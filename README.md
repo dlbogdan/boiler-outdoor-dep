@@ -56,6 +56,39 @@ When no demand sensor is configured, the offset is zero. This feature allows the
 
 The final flow temperature is clamped between the **Minimum Flow Temperature** (floor) and a configurable **Maximum Flow Temperature** (default: 67 °C, adjustable 45-75 °C). This hard cap prevents the boiler from being driven to excessively high temperatures regardless of the heat curve or demand boost.
 
+### Heating On/Off with Hysteresis
+
+The automation uses **two separate thresholds** to prevent rapid on/off toggling when outdoor temperature hovers near a single setpoint:
+
+| Threshold | Default | Purpose |
+|-----------|---------|----------|
+| Heating Off | 18 °C | Above this outdoor temp → heating turns **off** |
+| Heating On | 13 °C | Below this outdoor temp → heating turns back **on** |
+
+The 5 °C gap between these thresholds creates a **dead zone** (13–18 °C by default). While in the dead zone, the boiler maintains its current state — if it was heating, it keeps heating; if it was off, it stays off.
+
+#### Shutdown when calculated flow is too low
+
+Even when outdoor temperature is below the off-threshold, the heating will also shut down if the **calculated flow temperature** (after solar and demand offsets) drops to or below the **Minimum Flow Temperature**. This can happen on cold but very sunny days where the solar offset pushes the required flow temp so low that running the boiler is pointless.
+
+Critically, turning on again requires **both** conditions to be true:
+1. Outdoor temperature < Heating On threshold
+2. Calculated flow temperature > Minimum Flow Temperature
+
+This prevents a toggle conflict where cold outdoor air wants to turn heating on but strong sun simultaneously pushes the flow target below minimum. The boiler stays off until the sun fades and the calculated flow actually justifies running.
+
+#### State machine summary
+
+| Outdoor Temp | Calculated Flow | Boiler Currently | Action |
+|---|---|---|---|
+| ≥ Off threshold | any | any | **Turn off** |
+| any | ≤ Min flow | any | **Turn off** |
+| In dead zone | > Min flow | off | **Stay off** |
+| In dead zone | > Min flow | heating | **Keep heating** |
+| < On threshold | > Min flow | off | **Turn on** |
+| < On threshold | ≤ Min flow | off | **Stay off** |
+| < On threshold | > Min flow | heating | **Keep heating** |
+
 ### Rate Limiting
 
 To avoid excessive API calls (especially with cloud-connected boilers), updates are only sent when the calculated temperature differs from the current setpoint by at least the **Minimum Change Threshold** (default: 2 °C). The automation also re-evaluates on a 30-minute timer to catch gradual drifts.
@@ -107,8 +140,9 @@ All parameters are set when creating the automation from the blueprint (and can 
 |-----------|---------|-------------|
 | Design Outdoor Temp | −20 °C | Coldest expected outdoor temperature (design day) |
 | Design Flow Temp | 77 °C | Flow temperature needed at the design outdoor temp |
-| Min Flow Temp | 25 °C | Floor for flow temperature (used at heating-off threshold) |
+| Min Flow Temp | 25 °C | Floor for flow temperature; also the shutdown threshold — if calculated flow drops to or below this, heating turns off |
 | Outdoor Heating Off | 18 °C | Above this outdoor temp, heating turns off |
+| Outdoor Heating On | 13 °C | Below this outdoor temp, heating turns back on (must be lower than Heating Off to create a hysteresis dead zone) |
 | Lux Low Threshold | 10,000 lx | Illuminance where solar offset begins |
 | Lux High Threshold | 40,000 lx | Illuminance where solar offset is at maximum |
 | Max Solar Offset | 5 °C | Maximum flow temp reduction due to sun |
