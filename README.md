@@ -58,9 +58,7 @@ The final flow temperature is clamped between the **Minimum Flow Temperature** (
 
 ### Rate Limiting
 
-To avoid excessive API calls (especially with cloud-connected boilers), updates are only sent when:
-- The calculated temperature differs from the current setpoint by at least the **Minimum Change Threshold** (default: 2 °C), **and**
-- At least the **Minimum Update Interval** (default: 30 min) has passed since the last update.
+To avoid excessive API calls (especially with cloud-connected boilers), updates are only sent when the calculated temperature differs from the current setpoint by at least the **Minimum Change Threshold** (default: 2 °C). The automation also re-evaluates on a 30-minute timer to catch gradual drifts.
 
 Mode changes (heat ↔ off) always go through immediately.
 
@@ -120,7 +118,6 @@ All parameters are set when creating the automation from the blueprint (and can 
 | Demand Units per °C | 10 | How many demand units equal 1 °C of offset |
 | Max Flow Temperature | 67 °C | Hard upper limit for calculated flow temperature |
 | Min Change Threshold | 2 °C | Minimum setpoint change to trigger an API call |
-| Min Update Interval | 30 min | Minimum time between boiler API calls |
 
 ## Dashboard Example
 

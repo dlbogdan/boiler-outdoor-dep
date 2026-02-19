@@ -195,18 +195,6 @@ blueprint:
           unit_of_measurement: "°C"
           mode: slider
 
-    min_update_interval:
-      name: "Minimum Update Interval"
-      description: "Minimum time (minutes) between API calls to the boiler. Prevents exceeding cloud API rate limits."
-      default: 30
-      selector:
-        number:
-          min: 5
-          max: 120
-          step: 5
-          unit_of_measurement: "min"
-          mode: slider
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Automation definition
 # ═══════════════════════════════════════════════════════════════════════════
@@ -310,15 +298,12 @@ action:
         {% set raw = base_flow | float - solar_offset | float + demand_boost | float %}
         {{ [flow_min | float, [raw, flow_max | float] | min] | max | round(0) | int }}
 
-  # ── Rate limiting: read current boiler setpoint & last update time ──────
+  # ── Rate limiting: read current boiler setpoint ─────────────────────
   - variables:
       boiler_entity: !input boiler_climate
       min_change: !input min_change_threshold
-      min_interval: !input min_update_interval
       current_setpoint: "{{ state_attr(boiler_entity, 'temperature') | float(0) }}"
       current_mode: "{{ states(boiler_entity) }}"
-      last_updated_sec: "{{ (as_timestamp(now()) - as_timestamp(states[boiler_entity].last_updated)) | int }}"
-      interval_ok: "{{ last_updated_sec >= (min_interval | int * 60) }}"
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
       # Should we turn off? (outdoor warm enough)
       should_heat_off: "{{ t_out | float >= t_off | float }}"
@@ -327,9 +312,9 @@ action:
         {% if should_heat_off and current_mode != 'off' %}true
         {% elif not should_heat_off and current_mode == 'off' %}true
         {% else %}false{% endif %}
-      should_update: "{{ mode_change == 'true' or (change_big_enough and interval_ok) }}"
+      should_update: "{{ mode_change == 'true' or change_big_enough }}"
 
-  # ── Skip if no meaningful change or too soon ───────────────────────────
+  # ── Skip if no meaningful change ─────────────────────────────────────
   - condition: template
     value_template: "{{ should_update }}"
 
@@ -363,8 +348,7 @@ action:
         data:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
-            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C, DemandBoost=+{{ demand_boost }}°C,
-            MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C,
-            LastCall={{ last_updated_sec }}s ago
+            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C, DemandBoost={{ demand_boost }}°C,
+            MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
           level: info
