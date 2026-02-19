@@ -79,12 +79,24 @@ blueprint:
 
     heating_off_outdoor_temp:
       name: "Outdoor Temp - Heating Off"
-      description: "Above this outdoor temperature, heating turns off (°C)"
+      description: "Above this outdoor temperature, heating turns off (°C). Must be higher than 'Heating On' to create a hysteresis dead zone."
       default: 18
       selector:
         number:
           min: 10
           max: 25
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: slider
+
+    heating_on_outdoor_temp:
+      name: "Outdoor Temp - Heating On"
+      description: "Below this outdoor temperature, heating turns back on (°C). Must be lower than 'Heating Off' to prevent rapid toggling."
+      default: 13
+      selector:
+        number:
+          min: 5
+          max: 20
           step: 0.5
           unit_of_measurement: "°C"
           mode: slider
@@ -243,6 +255,7 @@ action:
       flow_design: !input design_flow_temp
       flow_min: !input min_flow_temp
       t_off: !input heating_off_outdoor_temp
+      t_on: !input heating_on_outdoor_temp
 
       # Solar parameters
       lux_low: !input lux_threshold_low
@@ -307,12 +320,18 @@ action:
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
       # Should we turn off? (outdoor warm enough)
       should_heat_off: "{{ t_out | float >= t_off | float }}"
+      # Should we turn on? (outdoor cold enough — below the lower hysteresis threshold)
+      should_heat_on: "{{ t_out | float < t_on | float }}"
+      # Dead zone: between t_on and t_off → maintain current state
+      in_dead_zone: "{{ not should_heat_off and not should_heat_on }}"
       # Mode change (off → heat or heat → off) always goes through
       mode_change: >-
         {% if should_heat_off and current_mode != 'off' %}true
-        {% elif not should_heat_off and current_mode == 'off' %}true
+        {% elif should_heat_on and current_mode == 'off' %}true
         {% else %}false{% endif %}
-      should_update: "{{ mode_change == 'true' or change_big_enough }}"
+      # In dead zone while off → suppress updates entirely (stay off)
+      dead_zone_hold: "{{ in_dead_zone and current_mode == 'off' }}"
+      should_update: "{{ not dead_zone_hold and (mode_change == 'true' or change_big_enough) }}"
 
   # ── Skip if no meaningful change ─────────────────────────────────────
   - condition: template
@@ -333,7 +352,18 @@ action:
           - service: system_log.write
             data:
               message: >-
-                Weather Comp: Outdoor {{ t_out }}°C ≥ threshold {{ t_off }}°C → heating OFF
+                Weather Comp: Outdoor {{ t_out }}°C ≥ off-threshold {{ t_off }}°C → heating OFF (on-threshold {{ t_on }}°C)
+              level: info
+
+      # Dead zone: between t_on and t_off while currently off → stay off
+      - conditions:
+          - condition: template
+            value_template: "{{ in_dead_zone and current_mode == 'off' }}"
+        sequence:
+          - service: system_log.write
+            data:
+              message: >-
+                Weather Comp: Outdoor {{ t_out }}°C in dead zone ({{ t_on }}–{{ t_off }}°C), currently off → staying OFF
               level: info
 
     # Otherwise → set calculated flow temperature
@@ -347,7 +377,8 @@ action:
       - service: system_log.write
         data:
           message: >-
-            Weather Comp: Outdoor={{ t_out }}°C, Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
+            Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
+            Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
             Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C, DemandBoost={{ demand_boost }}°C,
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
