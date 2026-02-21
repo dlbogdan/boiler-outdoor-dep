@@ -162,10 +162,10 @@ blueprint:
           unit_of_measurement: "×"
           mode: slider
 
-    # ── Heating demand boost ──────────────────────────────────────────────
+    # ── Heating demand scaling ─────────────────────────────────────────────
     heating_demand_sensor:
       name: "Total Heating Demand Sensor (optional)"
-      description: "Sensor reporting total heating demand (0-100). Offsets the flow temperature relative to the neutral demand point. Leave empty to disable."
+      description: "Sensor reporting total heating demand (0-100). Scales the heat portion of the flow temperature proportionally. Leave empty to disable."
       default: ""
       selector:
         entity:
@@ -173,7 +173,7 @@ blueprint:
 
     heating_demand_neutral:
       name: "Demand Neutral Point"
-      description: "Demand value that produces zero offset. Below this the flow temp is reduced; above it is increased."
+      description: "Demand value that produces no scaling (factor = 1.0). Below this, flow temp is reduced; above it is increased."
       default: 20
       selector:
         number:
@@ -182,15 +182,15 @@ blueprint:
           step: 5
           mode: slider
 
-    heating_demand_scale:
-      name: "Demand Units per °C"
-      description: "How many demand units correspond to 1 °C of offset (e.g. 10 = every 10 units above/below neutral adds/subtracts 1 °C)."
-      default: 10
+    heating_demand_power:
+      name: "Demand Curve Softness"
+      description: "Exponent for the demand scaling curve. Lower = gentler (0.2 = subtle), higher = more aggressive (1.0 = linear). Controls how much the flow temp drops when zones are satisfied."
+      default: 0.2
       selector:
         number:
-          min: 5
-          max: 50
-          step: 5
+          min: 0.1
+          max: 0.4
+          step: 0.1
           mode: slider
 
     # ── Output clamp ─────────────────────────────────────────────────────
@@ -277,9 +277,9 @@ action:
 
       # Heating demand parameters
       demand_neutral: !input heating_demand_neutral
-      demand_scale: !input heating_demand_scale
+      demand_power: !input heating_demand_power
 
-      # Heating demand boost (can be negative)
+      # Heating demand — proportional flow scaling
       demand_raw: >-
         {% if heating_demand_entity | default('', true) | length > 0
            and states(heating_demand_entity) not in ['unavailable', 'unknown', ''] %}
@@ -287,7 +287,8 @@ action:
         {% else %}
           {{ demand_neutral }}
         {% endif %}
-      demand_boost: "{{ ((demand_raw | float - demand_neutral | float) / demand_scale | float) | round(1) }}"
+      demand_ratio: "{{ (demand_raw | float / demand_neutral | float) | round(4) }}"
+      demand_factor: "{{ (demand_ratio | float ** demand_power | float) | round(4) }}"
 
       # Output clamp
       flow_max: !input max_flow_temp
@@ -319,9 +320,12 @@ action:
         {% endif %}
 
   - variables:
+      # Proportional demand scaling: scale the heat portion above curve_base
+      demand_adjusted_flow: >-
+        {{ (curve_base | float + (base_flow | float - curve_base | float) * demand_factor | float) | round(1) }}
       # Raw target before clamping (used to detect "no real demand")
       target_flow_raw: >-
-        {{ (base_flow | float - solar_offset | float + demand_boost | float) | round(1) }}
+        {{ (demand_adjusted_flow | float - solar_offset | float) | round(1) }}
       # Final clamped target (integer for boiler)
       target_flow: >-
         {{ [flow_min | float, [target_flow_raw | float, flow_max | float] | min] | max | round(0) | int }}
@@ -413,7 +417,8 @@ action:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
             Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
-            Base={{ base_flow }}°C, SolarOffset={{ solar_offset }}°C, DemandBoost={{ demand_boost }}°C,
+            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(ratio={{ demand_ratio }},factor={{ demand_factor }},p={{ demand_power }}),
+            SolarOffset={{ solar_offset }}°C,
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
           level: info
