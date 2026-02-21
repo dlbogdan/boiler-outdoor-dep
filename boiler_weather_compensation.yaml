@@ -55,7 +55,7 @@ blueprint:
 
     design_flow_temp:
       name: "Design Flow Temperature"
-      description: "Flow temperature needed on the coldest day (°C). Calibrated: 77 °C at -20 °C gives ~54 °C at 0 °C."
+      description: "Flow temperature needed on the coldest day (°C). Calibrated: 77 °C at -20 °C gives ~54 °C at 0 °C (with curve base 25 °C)."
       default: 77
       selector:
         number:
@@ -65,9 +65,21 @@ blueprint:
           unit_of_measurement: "°C"
           mode: slider
 
+    curve_base_temp:
+      name: "Curve Base Temperature"
+      description: "Flow temperature at the heating-off threshold — the bottom anchor of the heat curve. This shapes the curve; use 'Minimum Flow Temperature' for a safety floor."
+      default: 25
+      selector:
+        number:
+          min: 15
+          max: 40
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
     min_flow_temp:
       name: "Minimum Flow Temperature"
-      description: "Floor for flow temperature, used at the heating-off threshold (°C)"
+      description: "Hard lower limit (safety floor) for the output flow temperature (°C). Does not affect the shape of the heat curve."
       default: 25
       selector:
         number:
@@ -253,6 +265,7 @@ action:
       # Heat curve parameters
       t_design: !input design_outdoor_temp
       flow_design: !input design_flow_temp
+      curve_base: !input curve_base_temp
       flow_min: !input min_flow_temp
       t_off: !input heating_off_outdoor_temp
       t_on: !input heating_on_outdoor_temp
@@ -287,12 +300,12 @@ action:
       # Base flow temp from heat curve
       base_flow: >-
         {% if t_out | float >= t_off | float %}
-          {{ flow_min }}
+          {{ curve_base }}
         {% elif t_out | float <= t_design | float %}
           {{ flow_design }}
         {% else %}
           {% set demand = (t_off | float - t_out | float) / (t_off | float - t_design | float) %}
-          {{ (flow_min | float + (flow_design | float - flow_min | float) * (demand ** b)) | round(1) }}
+          {{ (curve_base | float + (flow_design | float - curve_base | float) * (demand ** b)) | round(1) }}
         {% endif %}
 
       # Solar gain offset
