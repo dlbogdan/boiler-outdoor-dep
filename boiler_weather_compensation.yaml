@@ -173,24 +173,25 @@ blueprint:
 
     heating_demand_neutral:
       name: "Demand Neutral Point"
-      description: "Demand value that produces no scaling (factor = 1.0). Below this, flow temp is reduced; above it is increased. For avg-delta-based demand sensors, typical values are 1–3."
-      default: 1.5
+      description: "Demand value that produces zero offset (no adjustment to the heat curve). Below this, flow temp is reduced; above it, flow temp is increased."
+      default: 3
       selector:
         number:
-          min: 0.5
+          min: 0
           max: 100
           step: 0.5
           mode: slider
 
-    heating_demand_power:
-      name: "Demand Curve Softness"
-      description: "Exponent for the demand scaling curve. Lower = gentler (0.2 = subtle), higher = more aggressive (1.0 = linear). Controls how much the flow temp drops when zones are satisfied."
-      default: 0.2
+    heating_demand_rate:
+      name: "Demand Rate (°C per 10% demand)"
+      description: "How many °C of flow temperature to add or subtract per 10 points of demand deviation from the neutral point. E.g. 0.1 = ±1°C per 10% demand."
+      default: 0.1
       selector:
         number:
-          min: 0.1
-          max: 0.4
-          step: 0.1
+          min: 0.05
+          max: 1.0
+          step: 0.05
+          unit_of_measurement: "°C/%"
           mode: slider
 
     # ── Output clamp ─────────────────────────────────────────────────────
@@ -277,9 +278,9 @@ action:
 
       # Heating demand parameters
       demand_neutral: !input heating_demand_neutral
-      demand_power: !input heating_demand_power
+      demand_rate: !input heating_demand_rate
 
-      # Heating demand — proportional flow scaling
+      # Heating demand — linear offset from neutral
       demand_raw: >-
         {% if heating_demand_entity | default('', true) | length > 0
            and states(heating_demand_entity) not in ['unavailable', 'unknown', ''] %}
@@ -287,8 +288,7 @@ action:
         {% else %}
           {{ demand_neutral }}
         {% endif %}
-      demand_ratio: "{{ (demand_raw | float / demand_neutral | float) | round(4) }}"
-      demand_factor: "{{ (demand_ratio | float ** demand_power | float) | round(4) }}"
+      demand_offset: "{{ ((demand_raw | float - demand_neutral | float) * demand_rate | float) | round(1) }}"
 
       # Output clamp
       flow_max: !input max_flow_temp
@@ -320,9 +320,9 @@ action:
         {% endif %}
 
   - variables:
-      # Proportional demand scaling: scale the heat portion above curve_base
+      # Linear demand offset applied to base flow
       demand_adjusted_flow: >-
-        {{ (curve_base | float + (base_flow | float - curve_base | float) * demand_factor | float) | round(1) }}
+        {{ (base_flow | float + demand_offset | float) | round(1) }}
       # Raw target before clamping (used to detect "no real demand")
       target_flow_raw: >-
         {{ (demand_adjusted_flow | float - solar_offset | float) | round(1) }}
@@ -417,7 +417,7 @@ action:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
             Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
-            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(ratio={{ demand_ratio }},factor={{ demand_factor }},p={{ demand_power }}),
+            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(demand={{ demand_raw }},neutral={{ demand_neutral }},offset={{ demand_offset }}°C,rate={{ demand_rate }}),
             SolarOffset={{ solar_offset }}°C,
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
