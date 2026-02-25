@@ -140,7 +140,7 @@ blueprint:
 
     lux_max_offset:
       name: "Max Solar Offset"
-      description: "Maximum flow temperature reduction due to sun (°C)"
+      description: "Maximum flow temperature reduction due to sun (°C). This is the full capacity of the solar heat accumulator."
       default: 5
       selector:
         number:
@@ -148,6 +148,37 @@ blueprint:
           max: 15
           step: 0.5
           unit_of_measurement: "°C"
+          mode: slider
+
+    solar_accumulator_helper:
+      name: "Solar Heat Accumulator (input_number)"
+      description: "An input_number helper that stores the solar heat soak level (0 to max offset). Create one with min=0, max=15, step=0.1. Displays on your dashboard as a gauge of how 'charged' the house is with solar heat."
+      selector:
+        entity:
+          domain: input_number
+
+    solar_charge_rate:
+      name: "Solar Charge Rate"
+      description: "How fast the solar accumulator charges at full sun intensity (°C per minute). At 0.2°C/min, full sun reaches 5°C cap in ~33 min (accounting for simultaneous decay)."
+      default: 0.2
+      selector:
+        number:
+          min: 0.01
+          max: 2.0
+          step: 0.01
+          unit_of_measurement: "°C/min"
+          mode: slider
+
+    solar_decay_rate:
+      name: "Solar Decay Rate"
+      description: "How fast the solar accumulator decays when there is no sun (°C per minute). At 0.1°C/min, a fully charged 5°C accumulator takes ~50 min to discharge completely."
+      default: 0.1
+      selector:
+        number:
+          min: 0.01
+          max: 1.0
+          step: 0.01
+          unit_of_measurement: "°C/min"
           mode: slider
 
     lux_multiplier:
@@ -253,6 +284,7 @@ action:
       outdoor_temp_entity: !input outdoor_temp_sensor
       outdoor_lux_entity: !input outdoor_lux_sensor
       heating_demand_entity: !input heating_demand_sensor
+      solar_accum_entity: !input solar_accumulator_helper
 
   # ── Check sensor availability before proceeding ────────────────────────
   - condition: template
@@ -280,6 +312,16 @@ action:
       lux_low: !input lux_threshold_low
       lux_high: !input lux_threshold_high
       max_solar_offset: !input lux_max_offset
+      solar_charge: !input solar_charge_rate
+      solar_decay: !input solar_decay_rate
+      solar_accum_prev: "{{ states(solar_accum_entity) | float(0) }}"
+      solar_dt_min: >-
+        {% set last = state_attr(solar_accum_entity, 'last_updated') or state_attr(solar_accum_entity, 'last_changed') %}
+        {% if last %}
+          {{ ((now() - last).total_seconds() / 60) | round(2) }}
+        {% else %}
+          1
+        {% endif %}
 
       # Heating demand parameters
       demand_neutral: !input heating_demand_neutral
@@ -314,15 +356,28 @@ action:
           {{ (curve_base | float + (flow_design | float - curve_base | float) * (demand ** b)) | round(1) }}
         {% endif %}
 
-      # Solar gain offset
-      solar_offset: >-
+      # Solar heat accumulator: charge with sun, decay without
+      lux_fraction: >-
         {% if lux | float <= lux_low | float %}
           0
         {% elif lux | float >= lux_high | float %}
-          {{ max_solar_offset }}
+          1
         {% else %}
-          {{ ((lux | float - lux_low | float) / (lux_high | float - lux_low | float) * max_solar_offset | float) | round(1) }}
+          {{ ((lux | float - lux_low | float) / (lux_high | float - lux_low | float)) | round(3) }}
         {% endif %}
+      solar_offset: >-
+        {% set dt = [solar_dt_min | float, 30] | min %}
+        {% set charge = lux_fraction | float * solar_charge | float * dt %}
+        {% set decay = solar_decay | float * dt %}
+        {% set new_val = solar_accum_prev | float + charge - decay %}
+        {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
+
+  # ── Write solar accumulator back to helper ─────────────────────────────
+  - service: input_number.set_value
+    target:
+      entity_id: !input solar_accumulator_helper
+    data:
+      value: "{{ solar_offset }}"
 
   - variables:
       # Linear demand offset applied to base flow
@@ -421,9 +476,9 @@ action:
         data:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
-            Lux={{ lux }}(raw={{ lux_raw }},x{{ lux_mult }}),
+            Lux={{ lux }}(raw={{ lux_raw }},x={{ lux_mult }}),
+            SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},+{{ (lux_fraction | float * solar_charge | float * [solar_dt_min | float, 30] | min) | round(2) }},-{{ (solar_decay | float * [solar_dt_min | float, 30] | min) | round(2) }}),
             Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(demand={{ demand_raw }},neutral={{ demand_neutral }},offset={{ demand_offset }}°C,rate={{ demand_rate }}),
-            SolarOffset={{ solar_offset }}°C,
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
           level: info
