@@ -240,6 +240,11 @@ trigger:
     entity_id: !input outdoor_lux_sensor
     id: lux_change
 
+  # React to heating demand changes
+  - platform: state
+    entity_id: !input heating_demand_sensor
+    id: demand_change
+
 condition: []
 
 action:
