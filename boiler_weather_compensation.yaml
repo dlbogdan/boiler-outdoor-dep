@@ -381,7 +381,7 @@ action:
       solar_offset: >-
         {% set dt = [solar_dt_min | float, 30] | min %}
         {% set charge = lux_fraction | float * solar_charge | float * dt %}
-        {% set decay = solar_decay | float * dt %}
+        {% set decay = solar_decay | float * dt if lux_fraction | float == 0 else 0 %}
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
@@ -490,7 +490,7 @@ action:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
             Lux={{ lux }}(raw={{ lux_raw }},x={{ lux_mult }}),
-            SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},+{{ (lux_fraction | float * solar_charge | float * [solar_dt_min | float, 30] | min) | round(2) }},-{{ (solar_decay | float * [solar_dt_min | float, 30] | min) | round(2) }}),
+            SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},+{{ (lux_fraction | float * solar_charge | float * [solar_dt_min | float, 30] | min) | round(2) }},-{{ (solar_decay | float * [solar_dt_min | float, 30] | min) if lux_fraction | float == 0 else 0 }}),
             Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(demand={{ demand_raw }},neutral={{ demand_neutral }},offset={{ demand_offset }}°C,rate={{ demand_rate }}),
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
