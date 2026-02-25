@@ -225,6 +225,18 @@ blueprint:
           unit_of_measurement: "°C/%"
           mode: slider
 
+    max_demand_offset:
+      name: "Max Demand Offset"
+      description: "Maximum °C the demand adjustment can add or subtract from the base flow temperature, regardless of demand rate."
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
     # ── Output clamp ─────────────────────────────────────────────────────
     max_flow_temp:
       name: "Maximum Flow Temperature"
@@ -326,6 +338,7 @@ action:
       # Heating demand parameters
       demand_neutral: !input heating_demand_neutral
       demand_rate: !input heating_demand_rate
+      demand_max_offset: !input max_demand_offset
 
       # Heating demand — linear offset from neutral
       demand_raw: >-
@@ -335,7 +348,7 @@ action:
         {% else %}
           {{ demand_neutral }}
         {% endif %}
-      demand_offset: "{{ ((demand_raw | float - demand_neutral | float) * demand_rate | float) | round(1) }}"
+      demand_offset: "{{ [[-1 * demand_max_offset | float, ((demand_raw | float - demand_neutral | float) * demand_rate | float)] | max, demand_max_offset | float] | min | round(1) }}"
 
       # Output clamp
       flow_max: !input max_flow_temp
