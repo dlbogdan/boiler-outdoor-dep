@@ -193,18 +193,18 @@ blueprint:
           unit_of_measurement: "×"
           mode: slider
 
-    # ── Heating demand scaling ─────────────────────────────────────────────
+    # ── Heating demand — PI controller ─────────────────────────────────────
     heating_demand_sensor:
       name: "Total Heating Demand Sensor (optional)"
-      description: "Sensor reporting total heating demand (0-100). Scales the heat portion of the flow temperature proportionally. Leave empty to disable."
+      description: "Sensor reporting total heating demand (0-100). Drives the PI controller that adjusts flow temperature. Leave empty to disable demand-based adjustment."
       default: ""
       selector:
         entity:
           domain: sensor
 
     heating_demand_neutral:
-      name: "Demand Neutral Point"
-      description: "Demand value that produces zero offset (no adjustment to the heat curve). Below this, flow temp is reduced; above it, flow temp is increased."
+      name: "PI Neutral Point"
+      description: "Demand value that produces zero P/I adjustment. Below this, the P-term reduces flow temp and the I-term decays; above it, P-term increases flow temp and I-term charges."
       default: 3
       selector:
         number:
@@ -214,26 +214,70 @@ blueprint:
           mode: slider
 
     heating_demand_rate:
-      name: "Demand Rate (°C per 10% demand)"
-      description: "How many °C of flow temperature to add or subtract per 10 points of demand deviation from the neutral point. E.g. 0.1 = ±1°C per 10% demand."
+      name: "P-Gain (°C per demand unit)"
+      description: "Proportional gain: immediate °C of flow temperature offset per unit of demand deviation from neutral. E.g. 0.1 means demand 10 above neutral → +1°C instant offset."
       default: 0.1
       selector:
         number:
           min: 0.05
           max: 1.0
           step: 0.05
-          unit_of_measurement: "°C/%"
+          unit_of_measurement: "°C/unit"
           mode: slider
 
     max_demand_offset:
-      name: "Max Demand Offset"
-      description: "Maximum °C the demand adjustment can add or subtract from the base flow temperature, regardless of demand rate."
+      name: "Max P-Offset"
+      description: "Maximum °C the proportional (P) term can add or subtract from the base flow temperature, regardless of P-gain."
       default: 10
       selector:
         number:
           min: 1
           max: 30
           step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    demand_integral_helper:
+      name: "Demand I-Term Accumulator (input_number)"
+      description: "An input_number helper that stores the integral (I) demand offset (0 to max). Create one with min=0, max=15, step=0.1. Leave empty to disable the I-term (P-only mode). Displays on your dashboard as a gauge of accumulated demand correction."
+      default: ""
+      selector:
+        entity:
+          domain: input_number
+
+    demand_integral_charge_rate:
+      name: "I-Term Charge Rate"
+      description: "How fast the I-term charges per unit of demand above neutral, per minute (°C/unit/min). At 0.05, demand=4 (neutral=3) charges at 0.05°C/min → +1.5°C after 30 min."
+      default: 0.05
+      selector:
+        number:
+          min: 0.01
+          max: 1.0
+          step: 0.01
+          unit_of_measurement: "°C/(unit·min)"
+          mode: slider
+
+    demand_integral_decay_rate:
+      name: "I-Term Decay Rate"
+      description: "How fast the I-term decays when demand is at or below neutral (°C per minute). At 0.1, a 2°C accumulator takes ~20 min to discharge completely."
+      default: 0.1
+      selector:
+        number:
+          min: 0.01
+          max: 1.0
+          step: 0.01
+          unit_of_measurement: "°C/min"
+          mode: slider
+
+    demand_integral_max:
+      name: "Max I-Offset"
+      description: "Hard cap on the integral (I) accumulator. Limits how much the I-term can boost flow temperature regardless of how long demand persists above neutral."
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 15
+          step: 0.5
           unit_of_measurement: "°C"
           mode: slider
 
@@ -297,6 +341,7 @@ action:
       outdoor_lux_entity: !input outdoor_lux_sensor
       heating_demand_entity: !input heating_demand_sensor
       solar_accum_entity: !input solar_accumulator_helper
+      demand_integral_entity: !input demand_integral_helper
 
   # ── Check sensor availability before proceeding ────────────────────────
   - condition: template
@@ -335,12 +380,12 @@ action:
           1
         {% endif %}
 
-      # Heating demand parameters
+      # Heating demand — PI controller parameters
       demand_neutral: !input heating_demand_neutral
       demand_rate: !input heating_demand_rate
-      demand_max_offset: !input max_demand_offset
+      demand_max_p_offset: !input max_demand_offset
 
-      # Heating demand — linear offset from neutral
+      # Heating demand — P-term (proportional offset from neutral)
       demand_raw: >-
         {% if heating_demand_entity | default('', true) | length > 0
            and states(heating_demand_entity) not in ['unavailable', 'unknown', ''] %}
@@ -348,7 +393,30 @@ action:
         {% else %}
           {{ demand_neutral }}
         {% endif %}
-      demand_offset: "{{ [[-1 * demand_max_offset | float, ((demand_raw | float - demand_neutral | float) * demand_rate | float)] | max, demand_max_offset | float] | min | round(1) }}"
+      demand_p_offset: "{{ [[-1 * demand_max_p_offset | float, ((demand_raw | float - demand_neutral | float) * demand_rate | float)] | max, demand_max_p_offset | float] | min | round(1) }}"
+
+      # Heating demand — I-term parameters
+      demand_i_charge_rate: !input demand_integral_charge_rate
+      demand_i_decay_rate: !input demand_integral_decay_rate
+      demand_i_max: !input demand_integral_max
+      demand_i_prev: >-
+        {% if demand_integral_entity | default('', true) | length > 0
+           and states(demand_integral_entity) not in ['unavailable', 'unknown', ''] %}
+          {{ states(demand_integral_entity) | float(0) }}
+        {% else %}
+          0
+        {% endif %}
+      demand_i_dt: >-
+        {% if demand_integral_entity | default('', true) | length > 0 %}
+          {% set last = state_attr(demand_integral_entity, 'last_updated') or state_attr(demand_integral_entity, 'last_changed') %}
+          {% if last %}
+            {{ ((now() - last).total_seconds() / 60) | round(2) }}
+          {% else %}
+            1
+          {% endif %}
+        {% else %}
+          0
+        {% endif %}
 
       # Output clamp
       flow_max: !input max_flow_temp
@@ -385,6 +453,19 @@ action:
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
+      # Demand I-term accumulator: charge when demand > neutral, decay otherwise
+      demand_i_offset: >-
+        {% if demand_integral_entity | default('', true) | length == 0 %}
+          0
+        {% else %}
+          {% set dt = [demand_i_dt | float, 30] | min %}
+          {% set deviation = [demand_raw | float - demand_neutral | float, 0] | max %}
+          {% set charge = deviation * demand_i_charge_rate | float * dt %}
+          {% set decay = demand_i_decay_rate | float * dt if demand_raw | float <= demand_neutral | float else 0 %}
+          {% set new_val = demand_i_prev | float + charge - decay %}
+          {{ [0, [new_val, demand_i_max | float] | min] | max | round(1) }}
+        {% endif %}
+
   # ── Write solar accumulator back to helper ─────────────────────────────
   - service: input_number.set_value
     target:
@@ -392,10 +473,21 @@ action:
     data:
       value: "{{ solar_offset }}"
 
+  # ── Write demand I-term accumulator back to helper (if configured) ─────
+  - if:
+      - condition: template
+        value_template: "{{ demand_integral_entity | default('', true) | length > 0 }}"
+    then:
+      - service: input_number.set_value
+        target:
+          entity_id: !input demand_integral_helper
+        data:
+          value: "{{ demand_i_offset }}"
+
   - variables:
-      # Linear demand offset applied to base flow
+      # PI demand offset applied to base flow
       demand_adjusted_flow: >-
-        {{ (base_flow | float + demand_offset | float) | round(1) }}
+        {{ (base_flow | float + demand_p_offset | float + demand_i_offset | float) | round(1) }}
       # Raw target before clamping (used to detect "no real demand")
       target_flow_raw: >-
         {{ (demand_adjusted_flow | float - solar_offset | float) | round(1) }}
@@ -491,7 +583,7 @@ action:
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
             Lux={{ lux }}(raw={{ lux_raw }},x={{ lux_mult }}),
             SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},+{{ (lux_fraction | float * solar_charge | float * [solar_dt_min | float, 30] | min) | round(2) }},-{{ (solar_decay | float * [solar_dt_min | float, 30] | min) if lux_fraction | float == 0 else 0 }}),
-            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(demand={{ demand_raw }},neutral={{ demand_neutral }},offset={{ demand_offset }}°C,rate={{ demand_rate }}),
+            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(P={{ demand_p_offset }}°C,I={{ demand_i_offset }}°C,demand={{ demand_raw }},neutral={{ demand_neutral }},rate={{ demand_rate }}),
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
           level: info

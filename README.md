@@ -35,22 +35,56 @@ On sunny days, solar radiation through windows provides free heating. The automa
 
 This prevents the common problem of overheating on cold but sunny days.
 
-### Heating Demand Offset (optional)
+### Heating Demand — PI Controller (optional)
 
-An optional 0-100 heating demand sensor can further adjust the flow temperature. The offset is calculated relative to a configurable **neutral point** (default: 20) with a configurable **scale** (default: 10 units per °C):
+An optional 0-100 heating demand sensor drives a **PI (Proportional-Integral) controller** that adjusts the flow temperature based on how much heat the house is actually requesting — for example from TRV/thermostat call-for-heat aggregation.
 
-$$offset = \frac{demand - neutral}{scale}$$
+When no demand sensor is configured, both P and I offsets are zero.
 
-| Demand | Offset (defaults) |
-|--------|-------------------|
-| 0 | −2 °C |
-| 10 | −1 °C |
-| 20 (neutral) | 0 °C |
-| 50 | +3 °C |
-| 80 | +6 °C |
-| 100 | +8 °C |
+#### P-Term (Proportional — instant response)
 
-When no demand sensor is configured, the offset is zero. This feature allows the system to react to how much heat the house is actually requesting — for example from TRV/thermostat call-for-heat aggregation.
+The proportional term produces an **immediate** offset based on the current demand deviation from the **PI neutral point** (default: 3):
+
+$$offset_P = (demand - neutral) \times P\text{-gain}$$
+
+With defaults (`neutral=3`, `P-gain=0.1`):
+
+| Demand | P-Offset |
+|--------|----------|
+| 0 | −0.3 °C |
+| 3 (neutral) | 0 °C |
+| 4 | +0.1 °C |
+| 13 | +1.0 °C |
+| 50 | +4.7 °C |
+| 100 | +9.7 °C |
+
+The P-term responds instantly but may be too small for persistent near-setpoint situations (e.g. demand=4 produces only +0.1 °C, which doesn't cross the 2 °C minimum change threshold).
+
+#### I-Term (Integral — accumulated correction)
+
+The integral term solves the "persistent small error" problem. It slowly **accumulates** a correction offset while demand stays above neutral, and **decays** back to zero when demand drops to or below neutral. This mirrors the solar accumulator pattern:
+
+- **Charging:** When `demand > neutral`, the I-term grows at `(demand − neutral) × I-charge-rate × Δt` per evaluation
+- **Decaying:** When `demand ≤ neutral`, the I-term decays at `I-decay-rate × Δt` per evaluation
+- **Capped** at `Max I-Offset` (default: 5 °C)
+
+With defaults (`I-charge-rate=0.05`, `I-decay-rate=0.1`, `neutral=3`, `demand=4`):
+
+| Time | P-Offset | I-Offset | Total |
+|------|----------|----------|-------|
+| 0 min | +0.1 °C | 0 °C | +0.1 °C |
+| 10 min | +0.1 °C | +0.5 °C | +0.6 °C |
+| 20 min | +0.1 °C | +1.0 °C | +1.1 °C |
+| 30 min | +0.1 °C | +1.5 °C | +1.6 °C |
+| 40 min | +0.1 °C | +2.0 °C | **+2.1 °C** ← crosses min change threshold |
+
+Once the boost heats rooms to setpoint and demand drops to neutral, the I-term decays at 0.1 °C/min — a 2 °C accumulator discharges in ~20 min. This makes the boost **temporary and self-correcting**.
+
+The I-term requires an `input_number` helper entity (create one with min=0, max=15, step=0.1). Leave the helper empty to disable the I-term entirely (P-only mode).
+
+#### Combined PI Formula
+
+$$T_{flow} = T_{base} + offset_P + offset_I - offset_{solar}$$
 
 ### Output Clamping
 
@@ -148,8 +182,13 @@ All parameters are set when creating the automation from the blueprint (and can 
 | Max Solar Offset | 5 °C | Maximum flow temp reduction due to sun |
 | Lux Sensor Multiplier | 1.0× | Scale factor for lux sensor (use >1 if sensor is shaded) |
 | Heating Demand Sensor | *(none)* | Optional 0-100 demand sensor entity |
-| Demand Neutral Point | 20 | Demand value producing zero offset |
-| Demand Units per °C | 10 | How many demand units equal 1 °C of offset |
+| PI Neutral Point | 3 | Demand value producing zero P/I adjustment |
+| P-Gain | 0.1 °C/unit | Immediate °C offset per unit of demand deviation from neutral |
+| Max P-Offset | 10 °C | Hard cap on proportional offset |
+| Demand I-Term Accumulator | *(none)* | `input_number` helper for I-term state (leave empty to disable) |
+| I-Term Charge Rate | 0.05 °C/(unit·min) | Accumulation speed per demand unit above neutral |
+| I-Term Decay Rate | 0.1 °C/min | Discharge speed when demand ≤ neutral |
+| Max I-Offset | 5 °C | Hard cap on integral offset |
 | Max Flow Temperature | 67 °C | Hard upper limit for calculated flow temperature |
 | Min Change Threshold | 2 °C | Minimum setpoint change to trigger an API call |
 
@@ -164,8 +203,10 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 3. If the house is **too cold** on cold days → increase Design Flow Temp.
 4. If the house is **too warm** on cold days → decrease Design Flow Temp.
 5. If the house **overheats on sunny days** → decrease lux thresholds or increase max solar offset.
-6. If you have a **demand sensor**, adjust the neutral point and scale to match your system's behavior. A lower neutral means more aggressive boosting; a higher scale means gentler response.
-7. Monitor the automation traces to verify sensible flow temperature values before relying on it.
+6. If you have a **demand sensor**, adjust the PI neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
+7. If rooms **consistently sit ~1 °C below setpoint** with low demand (~4%), enable the **I-term**: create an `input_number` helper (min=0, max=15, step=0.1) and select it in the blueprint. The default charge rate of 0.05 means 30 min of demand=4 (neutral=3) builds ~1.5 °C of extra offset — enough to cross the min change threshold and nudge the boiler.
+8. To tune the I-term: increase `I-Term Charge Rate` for faster response to persistent errors; decrease `I-Term Decay Rate` for longer boost persistence after rooms reach setpoint.
+9. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log now shows both `P=` and `I=` components of the demand adjustment.
 
 ## Files
 
