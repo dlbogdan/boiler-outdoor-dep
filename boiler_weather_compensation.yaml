@@ -247,15 +247,15 @@ blueprint:
 
     demand_integral_helper:
       name: "Demand I-Term Accumulator (input_number)"
-      description: "An input_number helper that stores the integral (I) demand offset (0 to max). Create one with min=0, max=15, step=0.1. Leave empty to disable the I-term (P-only mode). Displays on your dashboard as a gauge of accumulated demand correction."
+      description: "An input_number helper that stores the integral (I) demand offset (-max to +max). Create one with min=-15, max=15, step=0.1. Leave empty to disable the I-term (P-only mode). Positive = sustained over-demand boosting flow; negative = sustained under-demand reducing flow."
       default: ""
       selector:
         entity:
           domain: input_number
 
     demand_integral_charge_rate:
-      name: "I-Term Charge Rate"
-      description: "How fast the I-term charges per unit of demand above neutral, per minute (°C/unit/min). At 0.05, demand=4 (neutral=3) charges at 0.05°C/min → +1.5°C after 30 min."
+      name: "I-Term Rate"
+      description: "How fast the I-term moves per unit of demand deviation from neutral, per minute (°C/unit/min). Applies symmetrically: demand above neutral charges upward, below neutral charges downward. At 0.05, demand 1 unit above neutral → +0.05°C/min; 1 unit below → -0.05°C/min."
       default: 0.05
       selector:
         number:
@@ -266,8 +266,8 @@ blueprint:
           mode: slider
 
     demand_integral_decay_rate:
-      name: "I-Term Decay Rate"
-      description: "How fast the I-term decays when demand is at or below neutral (°C per minute). At 0.1, a 2°C accumulator takes ~20 min to discharge completely."
+      name: "I-Term Decay Rate (at neutral)"
+      description: "How fast the I-term decays toward zero when demand equals neutral (°C per minute). Provides a slow return to baseline even when demand sits right at neutral. At 0.1, a 2°C accumulator takes ~20 min to reach zero."
       default: 0.1
       selector:
         number:
@@ -278,8 +278,8 @@ blueprint:
           mode: slider
 
     demand_integral_max:
-      name: "Max I-Offset"
-      description: "Hard cap on the integral (I) accumulator. Limits how much the I-term can boost flow temperature regardless of how long demand persists above neutral."
+      name: "Max I-Offset (absolute)"
+      description: "Hard cap on the integral (I) accumulator in both directions. The I-term is clamped to [-max, +max]. Limits how much the I-term can boost or reduce flow temperature."
       default: 5
       selector:
         number:
@@ -468,17 +468,28 @@ action:
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
-      # Demand I-term accumulator: charge when demand > neutral, decay otherwise
+      # Demand I-term accumulator: bidirectional — charges up when demand > neutral, down when demand < neutral
       demand_i_offset: >-
         {% if demand_integral_entity | default('', true) | length == 0 %}
           0
         {% else %}
           {% set dt = [demand_i_dt | float, 30] | min %}
-          {% set deviation = [demand_raw | float - demand_neutral | float, 0] | max %}
+          {% set deviation = demand_raw | float - demand_neutral | float %}
           {% set charge = deviation * demand_i_charge_rate | float * dt %}
-          {% set decay = demand_i_decay_rate | float * dt if demand_raw | float <= demand_neutral | float else 0 %}
-          {% set new_val = demand_i_prev | float + charge - decay %}
-          {{ [0, [new_val, demand_i_max | float] | min] | max | round(1) }}
+          {% set decay_toward_zero = demand_i_decay_rate | float * dt %}
+          {% set prev = demand_i_prev | float %}
+          {% if deviation | float == 0 %}
+            {% if prev > 0 %}
+              {% set new_val = [prev - decay_toward_zero, 0] | max %}
+            {% elif prev < 0 %}
+              {% set new_val = [prev + decay_toward_zero, 0] | min %}
+            {% else %}
+              {% set new_val = 0 %}
+            {% endif %}
+          {% else %}
+            {% set new_val = prev + charge %}
+          {% endif %}
+          {{ [(-1 * demand_i_max | float), [new_val, demand_i_max | float] | min] | max | round(1) }}
         {% endif %}
 
   # ── Write solar accumulator back to helper ─────────────────────────────
