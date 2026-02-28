@@ -325,17 +325,21 @@ trigger:
   - platform: time_pattern
     minutes: "/30"
 
-  # React to outdoor temperature changes
+  # React to outdoor temperature changes (debounced — wait 5 min of stable value)
   - platform: state
     entity_id: !input outdoor_temp_sensor
     id: outdoor_temp_change
+    for:
+      minutes: 5
 
-  # React to illuminance swings
+  # React to illuminance swings (debounced — wait 5 min of stable value)
   - platform: state
     entity_id: !input outdoor_lux_sensor
     id: lux_change
+    for:
+      minutes: 5
 
-  # React to heating demand changes
+  # React to heating demand changes (debounced — wait 5 min of stable value)
   - platform: state
     entity_id: !input heating_demand_sensor
     id: demand_change
