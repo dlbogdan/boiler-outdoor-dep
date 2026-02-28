@@ -255,7 +255,7 @@ blueprint:
 
     demand_integral_charge_rate:
       name: "I-Term Rate"
-      description: "How fast the I-term moves per unit of demand deviation from neutral, per minute (°C/unit/min). Applies symmetrically: demand above neutral charges upward, below neutral charges downward. At 0.05, demand 1 unit above neutral → +0.05°C/min; 1 unit below → -0.05°C/min."
+      description: "Fixed rate at which the I-term moves when demand is away from neutral (°C per minute). Charges upward when demand > neutral, downward when demand < neutral, regardless of how far away. At 0.05, it takes ~100 min to reach the 5°C cap."
       default: 0.05
       selector:
         number:
@@ -339,10 +339,14 @@ trigger:
     for:
       minutes: 5
 
-  # React to heating demand changes (debounced — wait 5 min of stable value)
+  # React to heating demand changes (debounced — wait 10 min of stable value)
+  # Demand is still read every run; this just prevents the demand sensor
+  # from triggering excessively frequent re-evaluations.
   - platform: state
     entity_id: !input heating_demand_sensor
     id: demand_change
+    for:
+      minutes: 5
 
 condition: []
 
@@ -468,17 +472,20 @@ action:
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
-      # Demand I-term accumulator: bidirectional — charges up when demand > neutral, down when demand < neutral
+      # Demand I-term accumulator: fixed-rate bidirectional — moves up when demand > neutral, down when demand < neutral
       demand_i_offset: >-
         {% if demand_integral_entity | default('', true) | length == 0 %}
           0
         {% else %}
           {% set dt = [demand_i_dt | float, 30] | min %}
           {% set deviation = demand_raw | float - demand_neutral | float %}
-          {% set charge = deviation * demand_i_charge_rate | float * dt %}
           {% set decay_toward_zero = demand_i_decay_rate | float * dt %}
           {% set prev = demand_i_prev | float %}
-          {% if deviation | float == 0 %}
+          {% if deviation | float > 0 %}
+            {% set new_val = prev + demand_i_charge_rate | float * dt %}
+          {% elif deviation | float < 0 %}
+            {% set new_val = prev - demand_i_charge_rate | float * dt %}
+          {% else %}
             {% if prev > 0 %}
               {% set new_val = [prev - decay_toward_zero, 0] | max %}
             {% elif prev < 0 %}
@@ -486,8 +493,6 @@ action:
             {% else %}
               {% set new_val = 0 %}
             {% endif %}
-          {% else %}
-            {% set new_val = prev + charge %}
           {% endif %}
           {{ [(-1 * demand_i_max | float), [new_val, demand_i_max | float] | min] | max | round(1) }}
         {% endif %}
