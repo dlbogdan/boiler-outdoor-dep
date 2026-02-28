@@ -35,10 +35,27 @@ blueprint:
 
     boiler_climate:
       name: "Boiler / Heating Climate Entity"
-      description: "Climate entity used to set the boiler flow temperature"
+      description: "Climate entity used to set the boiler flow temperature. Leave default if using the number entity override below."
+      default: ""
       selector:
         entity:
           domain: climate
+
+    boiler_number_entity:
+      name: "Boiler Flow Temp Number Entity (alternative)"
+      description: "Use this instead of the climate entity when the climate integration caps the temperature too low. E.g. number.e3_vitodens_100_hc_0122_normal_temperature. When set, the climate entity above is ignored."
+      default: ""
+      selector:
+        entity:
+          domain: number
+
+    boiler_mode_helper:
+      name: "Boiler HVAC Mode Helper (required with number entity)"
+      description: "An input_boolean that tracks heating on/off when using the number entity (which has no native HVAC mode). Create via Settings → Helpers → Toggle."
+      default: ""
+      selector:
+        entity:
+          domain: input_boolean
 
     # ── Heat curve anchor points ──────────────────────────────────────────
     design_outdoor_temp:
@@ -342,6 +359,10 @@ action:
       heating_demand_entity: !input heating_demand_sensor
       solar_accum_entity: !input solar_accumulator_helper
       demand_integral_entity: !input demand_integral_helper
+      boiler_climate_entity: !input boiler_climate
+      boiler_number: !input boiler_number_entity
+      boiler_mode_entity: !input boiler_mode_helper
+      use_number_mode: "{{ boiler_number | default('', true) | length > 0 }}"
 
   # ── Check sensor availability before proceeding ────────────────────────
   - condition: template
@@ -497,10 +518,19 @@ action:
 
   # ── Rate limiting: read current boiler setpoint ─────────────────────
   - variables:
-      boiler_entity: !input boiler_climate
       min_change: !input min_change_threshold
-      current_setpoint: "{{ state_attr(boiler_entity, 'temperature') | float(0) }}"
-      current_mode: "{{ states(boiler_entity) }}"
+      current_setpoint: >-
+        {% if use_number_mode %}
+          {{ states(boiler_number) | float(0) }}
+        {% else %}
+          {{ state_attr(boiler_climate_entity, 'temperature') | float(0) }}
+        {% endif %}
+      current_mode: >-
+        {% if use_number_mode %}
+          {% if is_state(boiler_mode_entity, 'on') %}heat{% else %}off{% endif %}
+        {% else %}
+          {{ states(boiler_climate_entity) }}
+        {% endif %}
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
       # Should we turn off? (outdoor warm enough OR calculated flow ≤ minimum)
       should_heat_off: "{{ t_out | float >= t_off | float or target_flow_raw | float <= flow_min | float }}"
@@ -531,11 +561,24 @@ action:
           - condition: template
             value_template: "{{ t_out | float >= t_off | float }}"
         sequence:
-          - service: climate.set_hvac_mode
-            target:
-              entity_id: !input boiler_climate
-            data:
-              hvac_mode: "off"
+          - if:
+              - condition: template
+                value_template: "{{ use_number_mode }}"
+            then:
+              - service: number.set_value
+                target:
+                  entity_id: "{{ boiler_number }}"
+                data:
+                  value: "{{ flow_min }}"
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: "{{ boiler_mode_entity }}"
+            else:
+              - service: climate.set_hvac_mode
+                target:
+                  entity_id: "{{ boiler_climate_entity }}"
+                data:
+                  hvac_mode: "off"
           - service: system_log.write
             data:
               message: >-
@@ -547,11 +590,24 @@ action:
           - condition: template
             value_template: "{{ flow_below_min }}"
         sequence:
-          - service: climate.set_hvac_mode
-            target:
-              entity_id: !input boiler_climate
-            data:
-              hvac_mode: "off"
+          - if:
+              - condition: template
+                value_template: "{{ use_number_mode }}"
+            then:
+              - service: number.set_value
+                target:
+                  entity_id: "{{ boiler_number }}"
+                data:
+                  value: "{{ flow_min }}"
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: "{{ boiler_mode_entity }}"
+            else:
+              - service: climate.set_hvac_mode
+                target:
+                  entity_id: "{{ boiler_climate_entity }}"
+                data:
+                  hvac_mode: "off"
           - service: system_log.write
             data:
               message: >-
@@ -571,12 +627,25 @@ action:
 
     # Otherwise → set calculated flow temperature
     default:
-      - service: climate.set_temperature
-        target:
-          entity_id: !input boiler_climate
-        data:
-          temperature: "{{ target_flow }}"
-          hvac_mode: heat
+      - if:
+          - condition: template
+            value_template: "{{ use_number_mode }}"
+        then:
+          - service: number.set_value
+            target:
+              entity_id: "{{ boiler_number }}"
+            data:
+              value: "{{ target_flow }}"
+          - service: input_boolean.turn_on
+            target:
+              entity_id: "{{ boiler_mode_entity }}"
+        else:
+          - service: climate.set_temperature
+            target:
+              entity_id: "{{ boiler_climate_entity }}"
+            data:
+              temperature: "{{ target_flow }}"
+              hvac_mode: heat
       - service: system_log.write
         data:
           message: >-
