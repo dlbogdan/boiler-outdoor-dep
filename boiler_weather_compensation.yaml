@@ -5,7 +5,7 @@ blueprint:
     illuminance (lux). Uses the radiator nonlinearity exponent (0.78) from the
     Vaillant/Kühne heat curves, but without coupling to any single room
     temperature — ideal for multi-zone houses where each zone has its own
-    thermostat or TRV.
+    thermostat
 
     On sunny days, the flow temperature is reduced to prevent overheating from
     solar gain through windows.
