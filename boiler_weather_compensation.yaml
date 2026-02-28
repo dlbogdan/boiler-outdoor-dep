@@ -4,7 +4,7 @@ blueprint:
     Adjusts boiler flow temperature based on outdoor temperature and sun
     illuminance (lux). Uses the radiator nonlinearity exponent (0.78) from the
     Vaillant/Kühne heat curves, but without coupling to any single room
-    temperature — ideal for multi-zone houses where each zone has its own
+    temperature, ideal for multi-zone houses where each zone has its own
     thermostat
 
     On sunny days, the flow temperature is reduced to prevent overheating from
