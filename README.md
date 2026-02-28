@@ -35,6 +35,17 @@ On sunny days, solar radiation through windows provides free heating. The automa
 
 This prevents the common problem of overheating on cold but sunny days.
 
+### Boiler Control: Climate Entity + Optional Number Entity Override
+
+The blueprint always requires a **climate entity** for HVAC mode control (on/off). By default, it also uses the climate entity to set the flow temperature.
+
+However, some integrations (e.g. Viessmann) cap the flow temperature on their climate entity (e.g. 60 °C max). If your boiler exposes a **number entity** that allows higher temperatures, you can configure it as an override:
+
+- **Temperature** → written to the number entity (bypasses the climate entity's cap)
+- **HVAC mode (on/off)** → always controlled via the climate entity
+
+This way you get the full temperature range without needing any extra helpers or virtual entities.
+
 ### Heating Demand — PI Controller (optional)
 
 An optional 0-100 heating demand sensor drives a **PI (Proportional-Integral) controller** that adjusts the flow temperature based on how much heat the house is actually requesting — for example from TRV/thermostat call-for-heat aggregation.
@@ -62,25 +73,26 @@ The P-term responds instantly but may be too small for persistent near-setpoint 
 
 #### I-Term (Integral — accumulated correction)
 
-The integral term solves the "persistent small error" problem. It slowly **accumulates** a correction offset while demand stays above neutral, and **decays** back to zero when demand drops to or below neutral. This mirrors the solar accumulator pattern:
+The integral term solves the "persistent small error" problem. It moves at a **fixed rate** (not scaled by deviation magnitude — the P-term already handles proportional response):
 
-- **Charging:** When `demand > neutral`, the I-term grows at `(demand − neutral) × I-charge-rate × Δt` per evaluation
-- **Decaying:** When `demand ≤ neutral`, the I-term decays at `I-decay-rate × Δt` per evaluation
-- **Capped** at `Max I-Offset` (default: 5 °C)
+- **demand > neutral** → I-term charges **upward** at `I-rate × Δt` per evaluation
+- **demand < neutral** → I-term charges **downward** at `I-rate × Δt` per evaluation
+- **demand = neutral** → I-term **decays toward zero** at `decay-rate × Δt`
+- **Clamped** to `[-max, +max]` (default: ±5 °C)
 
-With defaults (`I-charge-rate=0.05`, `I-decay-rate=0.1`, `neutral=3`, `demand=4`):
+With defaults (`I-rate=0.05 °C/min`, `max=5 °C`):
 
-| Time | P-Offset | I-Offset | Total |
-|------|----------|----------|-------|
-| 0 min | +0.1 °C | 0 °C | +0.1 °C |
-| 10 min | +0.1 °C | +0.5 °C | +0.6 °C |
-| 20 min | +0.1 °C | +1.0 °C | +1.1 °C |
-| 30 min | +0.1 °C | +1.5 °C | +1.6 °C |
-| 40 min | +0.1 °C | +2.0 °C | **+2.1 °C** ← crosses min change threshold |
+| Time above neutral | I-Offset |
+|---|---|
+| 0 min | 0 °C |
+| 10 min | +0.5 °C |
+| 20 min | +1.0 °C |
+| 40 min | +2.0 °C |
+| 100 min | +5.0 °C (cap) |
 
-Once the boost heats rooms to setpoint and demand drops to neutral, the I-term decays at 0.1 °C/min — a 2 °C accumulator discharges in ~20 min. This makes the boost **temporary and self-correcting**.
+Once demand drops below neutral, the I-term reverses direction. When demand exactly equals neutral, it decays toward zero at the decay rate. This makes the offset **self-correcting** in both directions.
 
-The I-term requires an `input_number` helper entity (create one with min=0, max=15, step=0.1). Leave the helper empty to disable the I-term entirely (P-only mode).
+The I-term requires an `input_number` helper entity (create one with **min=-15, max=15, step=0.1** to allow both positive and negative values). Leave the helper empty to disable the I-term entirely (P-only mode).
 
 #### Combined PI Formula
 
@@ -123,11 +135,15 @@ This prevents a toggle conflict where cold outdoor air wants to turn heating on 
 | < On threshold | ≤ Min flow | off | **Stay off** |
 | < On threshold | > Min flow | heating | **Keep heating** |
 
-### Rate Limiting
+### Rate Limiting & Trigger Debouncing
 
-To avoid excessive API calls (especially with cloud-connected boilers), updates are only sent when the calculated temperature differs from the current setpoint by at least the **Minimum Change Threshold** (default: 2 °C). The automation also re-evaluates on a 30-minute timer to catch gradual drifts.
+To avoid excessive API calls (especially with cloud-connected boilers):
 
-Mode changes (heat ↔ off) always go through immediately.
+- **Minimum change threshold** (default: 2 °C) — updates are only sent when the calculated temperature differs from the current setpoint by at least this amount
+- **Trigger debouncing** — state-based triggers require the sensor to hold a stable value for a period before firing (5 min for outdoor temp/lux, 5 min for demand)
+- **Periodic timer** — a 30-minute re-evaluation catches gradual drifts
+
+Mode changes (on ↔ off) always go through immediately.
 
 ## Sensors Required
 
@@ -137,7 +153,8 @@ You need two outdoor sensors and a controllable boiler in Home Assistant. You se
 |-------|---------------|
 | Outdoor Temperature Sensor | Your outdoor thermometer (device class: `temperature`) |
 | Outdoor Illuminance Sensor | Your outdoor lux sensor (device class: `illuminance`) |
-| Boiler Climate Entity | Your boiler / heat pump `climate` entity |
+| Boiler Climate Entity | Your boiler / heat pump `climate` entity (always required — used for HVAC on/off) |
+| Boiler Number Entity | *(optional)* A `number` entity for flow temp, bypassing the climate entity's temperature cap |
 | Heating Demand Sensor | *(optional)* A 0-100 demand sensor |
 
 ## Installation
@@ -174,21 +191,24 @@ All parameters are set when creating the automation from the blueprint (and can 
 |-----------|---------|-------------|
 | Design Outdoor Temp | −20 °C | Coldest expected outdoor temperature (design day) |
 | Design Flow Temp | 77 °C | Flow temperature needed at the design outdoor temp |
-| Min Flow Temp | 25 °C | Floor for flow temperature; also the shutdown threshold — if calculated flow drops to or below this, heating turns off |
+| Curve Base Temp | 25 °C | Flow temperature at the heating-off threshold — shapes the curve |
+| Min Flow Temp | 25 °C | Floor for flow temperature; also the shutdown threshold |
 | Outdoor Heating Off | 18 °C | Above this outdoor temp, heating turns off |
-| Outdoor Heating On | 13 °C | Below this outdoor temp, heating turns back on (must be lower than Heating Off to create a hysteresis dead zone) |
+| Outdoor Heating On | 13 °C | Below this outdoor temp, heating turns back on |
 | Lux Low Threshold | 10,000 lx | Illuminance where solar offset begins |
 | Lux High Threshold | 40,000 lx | Illuminance where solar offset is at maximum |
 | Max Solar Offset | 5 °C | Maximum flow temp reduction due to sun |
 | Lux Sensor Multiplier | 1.0× | Scale factor for lux sensor (use >1 if sensor is shaded) |
+| Boiler Climate Entity | *(required)* | Climate entity for HVAC on/off (and temperature if no number entity) |
+| Boiler Number Entity | *(none)* | Optional number entity for flow temp (bypasses climate temp cap) |
 | Heating Demand Sensor | *(none)* | Optional 0-100 demand sensor entity |
 | PI Neutral Point | 3 | Demand value producing zero P/I adjustment |
 | P-Gain | 0.1 °C/unit | Immediate °C offset per unit of demand deviation from neutral |
 | Max P-Offset | 10 °C | Hard cap on proportional offset |
-| Demand I-Term Accumulator | *(none)* | `input_number` helper for I-term state (leave empty to disable) |
-| I-Term Charge Rate | 0.05 °C/(unit·min) | Accumulation speed per demand unit above neutral |
-| I-Term Decay Rate | 0.1 °C/min | Discharge speed when demand ≤ neutral |
-| Max I-Offset | 5 °C | Hard cap on integral offset |
+| Demand I-Term Accumulator | *(none)* | `input_number` helper for I-term state (min=-15, max=15, step=0.1) |
+| I-Term Rate | 0.05 °C/min | Fixed rate of I-term movement when demand ≠ neutral |
+| I-Term Decay Rate | 0.1 °C/min | Decay speed toward zero when demand = neutral |
+| Max I-Offset | 5 °C | Hard cap on integral offset in both directions (±) |
 | Max Flow Temperature | 67 °C | Hard upper limit for calculated flow temperature |
 | Min Change Threshold | 2 °C | Minimum setpoint change to trigger an API call |
 
@@ -203,10 +223,12 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 3. If the house is **too cold** on cold days → increase Design Flow Temp.
 4. If the house is **too warm** on cold days → decrease Design Flow Temp.
 5. If the house **overheats on sunny days** → decrease lux thresholds or increase max solar offset.
-6. If you have a **demand sensor**, adjust the PI neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
-7. If rooms **consistently sit ~1 °C below setpoint** with low demand (~4%), enable the **I-term**: create an `input_number` helper (min=0, max=15, step=0.1) and select it in the blueprint. The default charge rate of 0.05 means 30 min of demand=4 (neutral=3) builds ~1.5 °C of extra offset — enough to cross the min change threshold and nudge the boiler.
-8. To tune the I-term: increase `I-Term Charge Rate` for faster response to persistent errors; decrease `I-Term Decay Rate` for longer boost persistence after rooms reach setpoint.
-9. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log now shows both `P=` and `I=` components of the demand adjustment.
+6. **Number entity override:** If your climate integration caps flow temperature too low (e.g. Viessmann at 60 °C), set the "Boiler Flow Temp Number Entity" to the uncapped number entity. HVAC on/off will still go through the climate entity.
+7. If you have a **demand sensor**, adjust the PI neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
+8. If rooms **consistently sit slightly below setpoint**, enable the **I-term**: create an `input_number` helper (**min=-15, max=15, step=0.1**) and select it in the blueprint. The I-term charges at a fixed 0.05 °C/min when demand is above neutral — reaching +2 °C in ~40 min.
+9. If the I-term builds up too fast → lower `I-Term Rate`. If it takes too long to correct → raise it.
+10. The I-term works **bidirectionally**: it goes negative when demand stays below neutral, reducing flow temp. When demand equals neutral, it decays toward zero.
+11. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log shows `P=` and `I=` components of the demand adjustment.
 
 ## Files
 
