@@ -473,26 +473,25 @@ action:
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
-      # Demand I-term accumulator: deviation-scaled bidirectional — charges proportional to (demand - neutral)
+      # Demand I-term accumulator: deviation-scaled + constant decay toward zero
+      # Charge pushes I-term proportional to (demand - neutral).
+      # Decay always pulls I-term toward zero at a constant rate.
+      # When demand drops below neutral, both forces reduce the I-term together.
       demand_i_offset: >-
         {% if demand_integral_entity | default('', true) | length == 0 %}
           0
         {% else %}
           {% set dt = [demand_i_dt | float, 30] | min %}
           {% set deviation = demand_raw | float - demand_neutral | float %}
-          {% set decay_toward_zero = demand_i_decay_rate | float * dt %}
+          {% set charge = deviation * demand_i_charge_rate | float * dt %}
+          {% set decay = demand_i_decay_rate | float * dt %}
           {% set prev = demand_i_prev | float %}
-          {% if deviation | float != 0 %}
-            {% set charge = deviation * demand_i_charge_rate | float * dt %}
-            {% set new_val = prev + charge %}
+          {% if prev > 0 %}
+            {% set new_val = [prev + charge - decay, 0] | max %}
+          {% elif prev < 0 %}
+            {% set new_val = [prev + charge + decay, 0] | min %}
           {% else %}
-            {% if prev > 0 %}
-              {% set new_val = [prev - decay_toward_zero, 0] | max %}
-            {% elif prev < 0 %}
-              {% set new_val = [prev + decay_toward_zero, 0] | min %}
-            {% else %}
-              {% set new_val = 0 %}
-            {% endif %}
+            {% set new_val = prev + charge %}
           {% endif %}
           {{ [(-1 * demand_i_max | float), [new_val, demand_i_max | float] | min] | max | round(1) }}
         {% endif %}
