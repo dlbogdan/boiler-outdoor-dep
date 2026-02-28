@@ -323,7 +323,7 @@ mode: restart
 trigger:
   # Periodic re-evaluation
   - platform: time_pattern
-    minutes: "/30"
+    minutes: "/5"
 
   # React to outdoor temperature changes (debounced — wait 5 min of stable value)
   - platform: state
