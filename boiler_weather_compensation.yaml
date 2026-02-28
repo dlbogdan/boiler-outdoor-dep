@@ -599,14 +599,14 @@ action:
             target:
               entity_id: "{{ boiler_climate_entity }}"
             data:
-              hvac_mode: heat
+              hvac_mode: auto
         else:
           - service: climate.set_temperature
             target:
               entity_id: "{{ boiler_climate_entity }}"
             data:
               temperature: "{{ target_flow }}"
-              hvac_mode: heat
+              hvac_mode: auto
       - service: system_log.write
         data:
           message: >-
