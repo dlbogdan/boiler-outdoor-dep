@@ -255,7 +255,7 @@ blueprint:
 
     demand_integral_charge_rate:
       name: "I-Term Rate"
-      description: "Fixed rate at which the I-term moves when demand is away from neutral (°C per minute). Charges upward when demand > neutral, downward when demand < neutral, regardless of how far away. At 0.05, it takes ~100 min to reach the 5°C cap."
+      description: "How fast the I-term moves per unit of demand deviation from neutral, per minute (°C/unit/min). Scales with error magnitude: larger deviations charge faster. At 0.05 with deviation=5, the rate is 0.25°C/min → reaches 5°C cap in ~20 min. Now updates only on the periodic timer so the rate is predictable."
       default: 0.05
       selector:
         number:
@@ -473,7 +473,7 @@ action:
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
-      # Demand I-term accumulator: fixed-rate bidirectional — moves up when demand > neutral, down when demand < neutral
+      # Demand I-term accumulator: deviation-scaled bidirectional — charges proportional to (demand - neutral)
       demand_i_offset: >-
         {% if demand_integral_entity | default('', true) | length == 0 %}
           0
@@ -482,10 +482,9 @@ action:
           {% set deviation = demand_raw | float - demand_neutral | float %}
           {% set decay_toward_zero = demand_i_decay_rate | float * dt %}
           {% set prev = demand_i_prev | float %}
-          {% if deviation | float > 0 %}
-            {% set new_val = prev + demand_i_charge_rate | float * dt %}
-          {% elif deviation | float < 0 %}
-            {% set new_val = prev - demand_i_charge_rate | float * dt %}
+          {% if deviation | float != 0 %}
+            {% set charge = deviation * demand_i_charge_rate | float * dt %}
+            {% set new_val = prev + charge %}
           {% else %}
             {% if prev > 0 %}
               {% set new_val = [prev - decay_toward_zero, 0] | max %}
