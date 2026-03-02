@@ -538,7 +538,7 @@ action:
     then:
       - service: input_number.set_value
         target:
-          entity_id: !input demand_integral_helper
+          entity_id: "{{ demand_integral_entity }}"
         data:
           value: "{{ demand_i_offset }}"
 
