@@ -217,8 +217,8 @@ blueprint:
       selector:
         number:
           min: 0
-          max: 100
-          step: 0.5
+          max: 10
+          step: 0.1
           mode: slider
 
     heating_demand_rate:
