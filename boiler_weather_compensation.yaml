@@ -160,7 +160,7 @@ blueprint:
 
     solar_accumulator_helper:
       name: "Solar Heat Accumulator (input_number)"
-      description: "An input_number helper that stores the solar heat soak level (0 to max offset). Create one with min=0, max=15, step=0.1. Displays on your dashboard as a gauge of how 'charged' the house is with solar heat."
+      description: "Stores the solar heat soak level (0 to max offset, step 0.1). Displays on your dashboard as a gauge of how 'charged' the house is with solar heat. Use the + button to create one."
       selector:
         entity:
           domain: input_number
@@ -256,6 +256,14 @@ blueprint:
           unit_of_measurement: "°C"
           mode: slider
 
+    demand_p_offset_helper:
+      name: "P-Offset Monitor (input_number, optional)"
+      description: "Tracks the current P-offset so you can graph it on your dashboard (min=-10, max=10, step=0.1). Leave empty to skip. Use the + button to create one."
+      default: ""
+      selector:
+        entity:
+          domain: input_number
+
     # ── Output clamp ─────────────────────────────────────────────────────
     max_flow_temp:
       name: "Maximum Flow Temperature"
@@ -317,6 +325,7 @@ action:
       heating_demand_entity: !input heating_demand_sensor
       solar_accum_entity: !input solar_accumulator_helper
       boiler_climate_entity: !input boiler_climate
+      demand_p_offset_entity: !input demand_p_offset_helper
       boiler_number: !input boiler_number_entity
       use_number_mode: "{{ boiler_number | default('', true) | length > 0 }}"
 
@@ -428,6 +437,20 @@ action:
           entity_id: !input solar_accumulator_helper
         data:
           value: "{{ solar_offset }}"
+
+  # ── Write P-offset to monitor helper (only on periodic trigger) ─────────
+  - if:
+      - condition: and
+        conditions:
+          - condition: trigger
+            id: periodic
+          - condition: template
+            value_template: "{{ demand_p_offset_entity | default('', true) | length > 0 }}"
+    then:
+      - service: input_number.set_value
+        data:
+          entity_id: "{{ demand_p_offset_entity }}"
+          value: "{{ demand_p_offset }}"
 
   - variables:
       # P demand offset applied to base flow
