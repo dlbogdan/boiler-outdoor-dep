@@ -167,8 +167,8 @@ blueprint:
 
     solar_charge_rate:
       name: "Solar Charge Rate"
-      description: "How fast the solar accumulator charges at full sun intensity (°C per minute). At 0.2°C/min, full sun reaches 5°C cap in ~33 min (accounting for simultaneous decay)."
-      default: 0.2
+      description: "How fast the solar accumulator charges at full sun intensity (°C per minute). With half-life=25 min at 5°C outdoor, charge=0.15 gives an equilibrium of ~5.4°C at full sun (just above the default cap)."
+      default: 0.15
       selector:
         number:
           min: 0.01
@@ -177,16 +177,16 @@ blueprint:
           unit_of_measurement: "°C/min"
           mode: slider
 
-    solar_decay_rate:
-      name: "Solar Decay Rate"
-      description: "How fast the solar accumulator decays when there is no sun (°C per minute). At 0.1°C/min, a fully charged 5°C accumulator takes ~50 min to discharge completely."
-      default: 0.1
+    solar_decay_halflife:
+      name: "Solar Decay Half-Life"
+      description: "Minutes for the solar accumulator to lose half its stored heat (with no sun, at 5°C outdoor). Exponential decay: fast when full, slow when nearly empty. On colder days, decay is faster (Newton's law of cooling). 25 min suits moderate insulation; try 35–45 for well-insulated, 15–20 for poorly insulated."
+      default: 25
       selector:
         number:
-          min: 0.01
-          max: 1.0
-          step: 0.01
-          unit_of_measurement: "°C/min"
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: "min"
           mode: slider
 
     lux_multiplier:
@@ -356,14 +356,15 @@ action:
       lux_high: !input lux_threshold_high
       max_solar_offset: !input lux_max_offset
       solar_charge: !input solar_charge_rate
-      solar_decay: !input solar_decay_rate
+      solar_halflife: !input solar_decay_halflife
       solar_accum_prev: "{{ states(solar_accum_entity) | float(0) }}"
       solar_dt_min: >-
-        {% set last = state_attr(solar_accum_entity, 'last_updated') or state_attr(solar_accum_entity, 'last_changed') %}
-        {% if last %}
-          {{ ((now() - last).total_seconds() / 60) | round(2) }}
+        {% set last_ts = as_timestamp(states[solar_accum_entity].last_updated, 0) %}
+        {% set now_ts = as_timestamp(now()) %}
+        {% if last_ts > 0 %}
+          {{ [(now_ts - last_ts) / 60, 30] | min | round(2) }}
         {% else %}
-          1
+          5
         {% endif %}
 
       # Heating demand — P controller parameters
@@ -409,7 +410,10 @@ action:
           {{ (curve_base | float + (flow_design | float - curve_base | float) * (demand ** b)) | round(1) }}
         {% endif %}
 
-      # Solar heat accumulator: charge with sun, decay without
+      # Solar heat accumulator: exact ODE solution with exponential decay
+      # dA/dt = r·f − k·A  →  A_new = A_eq + (A_prev − A_eq) · 2^(−k·dt/ln2)
+      # Decay is temperature-dependent (Newton's law of cooling):
+      #   colder outdoor → faster heat loss → higher k → lower equilibrium
       lux_fraction: >-
         {% if lux | float <= lux_low | float %}
           0
@@ -419,11 +423,27 @@ action:
           {{ ((lux | float - lux_low | float) / (lux_high | float - lux_low | float)) | round(3) }}
         {% endif %}
       solar_offset: >-
-        {% set dt = [solar_dt_min | float, 30] | min %}
-        {% set charge = lux_fraction | float * solar_charge | float * dt %}
-        {% set decay = solar_decay | float * dt if lux_fraction | float == 0 else 0 %}
-        {% set new_val = solar_accum_prev | float + charge - decay %}
-        {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
+        {% set dt = solar_dt_min | float %}
+        {% set r = solar_charge | float %}
+        {% set f = lux_fraction | float %}
+        {% set hl_base = solar_halflife | float %}
+        {% set cap = max_solar_offset | float %}
+        {% set prev = solar_accum_prev | float %}
+        {% set t_out_val = t_out | float %}
+        {# Temperature-dependent decay: base half-life at T_out=5°C, floor factor 0.5 #}
+        {% set t_indoor = 20.0 %}
+        {% set t_ref = 5.0 %}
+        {% set temp_factor = [0.5, (t_indoor - t_out_val) / (t_indoor - t_ref)] | max %}
+        {% set k = 0.693147 / hl_base * temp_factor %}
+        {# Exact solution: approach equilibrium exponentially #}
+        {% if k > 0 %}
+          {% set a_eq = r * f / k %}
+          {% set decay_factor = 2 ** (-k * dt / 0.693147) %}
+          {% set new_val = a_eq + (prev - a_eq) * decay_factor %}
+        {% else %}
+          {% set new_val = prev + r * f * dt %}
+        {% endif %}
+        {{ [0, [new_val, cap] | min] | max | round(1) }}
 
 
 
@@ -565,7 +585,7 @@ action:
           message: >-
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
             Lux={{ lux }}(raw={{ lux_raw }},x={{ lux_mult }}),
-            SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},+{{ (lux_fraction | float * solar_charge | float * [solar_dt_min | float, 30] | min) | round(2) }},-{{ (solar_decay | float * [solar_dt_min | float, 30] | min) if lux_fraction | float == 0 else 0 }}),
+            SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},hl={{ solar_halflife }}min,temp_fac={{ [0.5, (20.0 - t_out | float) / 15.0] | max | round(2) }},a_eq={{ ((solar_charge | float * lux_fraction | float) / (0.693147 / (solar_halflife | float) * [0.5, (20.0 - t_out | float) / 15.0] | max)) | round(1) if lux_fraction | float > 0 else 0 }}),
             Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(P={{ demand_p_offset }}°C,demand={{ demand_raw }},neutral={{ demand_neutral }},rate={{ demand_rate }}),
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C

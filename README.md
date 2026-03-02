@@ -25,15 +25,31 @@ This is the same physics behind the Vaillant/Kühne heat curves, but expressed a
 
 ### Solar Gain Offset
 
-On sunny days, solar radiation through windows provides free heating. The automation **reduces** the flow temperature proportionally to outdoor illuminance:
+On sunny days, solar radiation through windows provides free heating. The automation tracks how much solar heat the house has absorbed using a **thermal accumulator** model based on Newton's law of cooling.
 
-| Lux | Effect |
-|-----|--------|
-| < 10,000 lx | No reduction |
-| 10,000-40,000 lx | Linear ramp from 0 to max offset |
-| > 40,000 lx | Full reduction (default: −5 °C) |
+The accumulator follows the first-order ODE:
 
-This prevents the common problem of overheating on cold but sunny days.
+$$\frac{dA}{dt} = r \cdot f - k \cdot A$$
+
+Where $r$ = charge rate (°C/min), $f$ = lux fraction (0–1), $k$ = decay constant (1/min), $A$ = stored heat (°C). This is solved exactly each timestep:
+
+$$A_{eq} = \frac{r \cdot f}{k}, \quad A_{new} = A_{eq} + (A_{prev} - A_{eq}) \cdot 2^{-k \cdot \Delta t / \ln 2}$$
+
+**Key behaviors:**
+
+- **Always decays** — the house is always losing absorbed heat, even while the sun is shining. Net result is charge minus decay.
+- **Natural equilibrium** — under constant partial sun, the accumulator settles where charge equals decay (not at the cap). 50% sun → ~half the full-sun equilibrium.
+- **Exponential decay** — fast when full, tapering as it empties (Newton's law of cooling). A full accumulator loses heat much faster than a nearly empty one.
+- **Temperature-dependent** — colder outdoor temps increase the decay rate (larger ΔT to environment). On a −10°C day, decay is 2× faster than at 5°C.
+
+| Outdoor Temp | Effective Half-Life (base 25 min) | Full-Sun Equilibrium |
+|---|---|---|
+| −10°C | 12.5 min | 2.7°C |
+| 0°C | 18.8 min | 4.1°C |
+| 5°C (reference) | 25 min | 5.4°C → capped at 5°C |
+| 10°C | 37.5 min | 8.1°C → capped at 5°C |
+
+The accumulator state is stored in an `input_number` helper (updated every 5 minutes on the periodic timer), giving you history graphs on your dashboard.
 
 ### Boiler Control: Climate Entity + Optional Number Entity Override
 
@@ -174,7 +190,9 @@ All parameters are set when creating the automation from the blueprint (and can 
 | Outdoor Heating On | 13 °C | Below this outdoor temp, heating turns back on |
 | Lux Low Threshold | 10,000 lx | Illuminance where solar offset begins |
 | Lux High Threshold | 40,000 lx | Illuminance where solar offset is at maximum |
-| Max Solar Offset | 5 °C | Maximum flow temp reduction due to sun |
+| Max Solar Offset | 5 °C | Cap on solar flow temp reduction |
+| Solar Charge Rate | 0.15 °C/min | Charge speed at full sun intensity |
+| Solar Decay Half-Life | 25 min | Minutes to lose half stored heat (at 5°C outdoor). Exponential: fast when full, slow when empty. Colder outdoor = faster decay. |
 | Lux Sensor Multiplier | 1.0× | Scale factor for lux sensor (use >1 if sensor is shaded) |
 | Boiler Climate Entity | *(required)* | Climate entity for HVAC on/off (and temperature if no number entity) |
 | Boiler Number Entity | *(none)* | Optional number entity for flow temp (bypasses climate temp cap) |
@@ -196,11 +214,13 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 2. **Set Design Flow Temp** to the flow temperature your radiators need on that coldest day to keep the house warm. Calibrated default: 77 °C at −20 °C (gives ~54 °C at 0 °C outdoor).
 3. If the house is **too cold** on cold days → increase Design Flow Temp.
 4. If the house is **too warm** on cold days → decrease Design Flow Temp.
-5. If the house **overheats on sunny days** → decrease lux thresholds or increase max solar offset.
-6. **Number entity override:** If your climate integration caps flow temperature too low (e.g. Viessmann at 60 °C), set the "Boiler Flow Temp Number Entity" to the uncapped number entity. HVAC on/off will still go through the climate entity.
-7. If you have a **demand sensor**, adjust the neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
-8. Set `P-Term Exponent` below 1.0 (e.g. 0.6) for a logarithmic-like curve that gives a meaningful boost even at low demand levels while compressing the response at high demand.
-9. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log shows the `P=` component of the demand adjustment.
+5. If the house **overheats on sunny days** → decrease lux thresholds, increase max solar offset, or lower the solar decay half-life (faster dissipation).
+6. If the solar accumulator **charges too slowly** on sunny days → increase the solar charge rate.
+7. If the solar offset **lingers too long after sunset** → lower the solar decay half-life.
+8. **Number entity override:** If your climate integration caps flow temperature too low (e.g. Viessmann at 60 °C), set the "Boiler Flow Temp Number Entity" to the uncapped number entity. HVAC on/off will still go through the climate entity.
+9. If you have a **demand sensor**, adjust the neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
+10. Set `P-Term Exponent` below 1.0 (e.g. 0.6) for a logarithmic-like curve that gives a meaningful boost even at low demand levels while compressing the response at high demand.
+11. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log shows the `P=` component of the demand adjustment and solar accumulator state including equilibrium values.
 
 ## Files
 
