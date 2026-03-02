@@ -6,7 +6,7 @@ blueprint:
     Vaillant/Kühne heat curves, but without coupling to any single room
     temperature, ideal for multi-zone houses where each zone has its own
     thermostat
-
+    cacasd
     On sunny days, the flow temperature is reduced to prevent overheating from
     solar gain through windows.
 
