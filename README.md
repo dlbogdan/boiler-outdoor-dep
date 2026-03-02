@@ -48,17 +48,17 @@ This way you get the full temperature range without needing any extra helpers or
 
 ### Heating Demand — PI Controller (optional)
 
-An optional 0-100 heating demand sensor drives a **PI (Proportional-Integral) controller** that adjusts the flow temperature based on how much heat the house is actually requesting — for example from TRV/thermostat call-for-heat aggregation.
+An optional 0-100 heating demand sensor drives a **proportional (P) controller** that adjusts the flow temperature based on how much heat the house is actually requesting — for example from TRV/thermostat call-for-heat aggregation.
 
-When no demand sensor is configured, both P and I offsets are zero.
+When no demand sensor is configured, the P offset is zero.
 
-#### P-Term (Proportional — instant response)
+#### P-Term (Proportional — power-law response)
 
-The proportional term produces an **immediate** offset based on the current demand deviation from the **PI neutral point** (default: 3):
+The proportional term produces an **immediate** offset based on the current demand deviation from the **neutral point** (default: 3), shaped by a configurable power-law exponent:
 
-$$offset_P = (demand - neutral) \times P\text{-gain}$$
+$$offset_P = gain \times |demand - neutral|^{exponent} \times \text{sign}(deviation)$$
 
-With defaults (`neutral=3`, `P-gain=0.1`):
+With defaults (`neutral=3`, `gain=0.1`, `exponent=1.0`):
 
 | Demand | P-Offset |
 |--------|----------|
@@ -69,34 +69,11 @@ With defaults (`neutral=3`, `P-gain=0.1`):
 | 50 | +4.7 °C |
 | 100 | +9.7 °C |
 
-The P-term responds instantly but may be too small for persistent near-setpoint situations (e.g. demand=4 produces only +0.1 °C, which doesn't cross the 2 °C minimum change threshold).
+Set the exponent below 1.0 for a logarithmic-like curve that boosts low demand values and compresses high ones (e.g. `exponent=0.6`).
 
-#### I-Term (Integral — accumulated correction)
+#### Flow Temperature Formula
 
-The integral term solves the "persistent small error" problem. It moves at a **fixed rate** (not scaled by deviation magnitude — the P-term already handles proportional response):
-
-- **demand > neutral** → I-term charges **upward** at `I-rate × Δt` per evaluation
-- **demand < neutral** → I-term charges **downward** at `I-rate × Δt` per evaluation
-- **demand = neutral** → I-term **decays toward zero** at `decay-rate × Δt`
-- **Clamped** to `[-max, +max]` (default: ±5 °C)
-
-With defaults (`I-rate=0.05 °C/min`, `max=5 °C`):
-
-| Time above neutral | I-Offset |
-|---|---|
-| 0 min | 0 °C |
-| 10 min | +0.5 °C |
-| 20 min | +1.0 °C |
-| 40 min | +2.0 °C |
-| 100 min | +5.0 °C (cap) |
-
-Once demand drops below neutral, the I-term reverses direction. When demand exactly equals neutral, it decays toward zero at the decay rate. This makes the offset **self-correcting** in both directions.
-
-The I-term requires an `input_number` helper entity (create one with **min=-15, max=15, step=0.1** to allow both positive and negative values). Leave the helper empty to disable the I-term entirely (P-only mode).
-
-#### Combined PI Formula
-
-$$T_{flow} = T_{base} + offset_P + offset_I - offset_{solar}$$
+$$T_{flow} = T_{base} + offset_P - offset_{solar}$$
 
 ### Output Clamping
 
@@ -202,13 +179,10 @@ All parameters are set when creating the automation from the blueprint (and can 
 | Boiler Climate Entity | *(required)* | Climate entity for HVAC on/off (and temperature if no number entity) |
 | Boiler Number Entity | *(none)* | Optional number entity for flow temp (bypasses climate temp cap) |
 | Heating Demand Sensor | *(none)* | Optional 0-100 demand sensor entity |
-| PI Neutral Point | 3 | Demand value producing zero P/I adjustment |
-| P-Gain | 0.1 °C/unit | Immediate °C offset per unit of demand deviation from neutral |
+| P Neutral Point | 3 | Demand value producing zero P adjustment |
+| P-Gain | 0.1 °C/unit | Gain factor for power-law P-term |
+| P-Term Exponent | 1.0 | Power-law exponent (< 1 = logarithmic-like curve) |
 | Max P-Offset | 10 °C | Hard cap on proportional offset |
-| Demand I-Term Accumulator | *(none)* | `input_number` helper for I-term state (min=-15, max=15, step=0.1) |
-| I-Term Rate | 0.05 °C/min | Fixed rate of I-term movement when demand ≠ neutral |
-| I-Term Decay Rate | 0.1 °C/min | Decay speed toward zero when demand = neutral |
-| Max I-Offset | 5 °C | Hard cap on integral offset in both directions (±) |
 | Max Flow Temperature | 67 °C | Hard upper limit for calculated flow temperature |
 | Min Change Threshold | 2 °C | Minimum setpoint change to trigger an API call |
 
@@ -224,11 +198,9 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 4. If the house is **too warm** on cold days → decrease Design Flow Temp.
 5. If the house **overheats on sunny days** → decrease lux thresholds or increase max solar offset.
 6. **Number entity override:** If your climate integration caps flow temperature too low (e.g. Viessmann at 60 °C), set the "Boiler Flow Temp Number Entity" to the uncapped number entity. HVAC on/off will still go through the climate entity.
-7. If you have a **demand sensor**, adjust the PI neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
-8. If rooms **consistently sit slightly below setpoint**, enable the **I-term**: create an `input_number` helper (**min=-15, max=15, step=0.1**) and select it in the blueprint. The I-term charges at a fixed 0.05 °C/min when demand is above neutral — reaching +2 °C in ~40 min.
-9. If the I-term builds up too fast → lower `I-Term Rate`. If it takes too long to correct → raise it.
-10. The I-term works **bidirectionally**: it goes negative when demand stays below neutral, reducing flow temp. When demand equals neutral, it decays toward zero.
-11. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log shows `P=` and `I=` components of the demand adjustment.
+7. If you have a **demand sensor**, adjust the neutral point and P-gain to match your system's behavior. A lower neutral means more aggressive boosting; a higher P-gain means stronger instant response.
+8. Set `P-Term Exponent` below 1.0 (e.g. 0.6) for a logarithmic-like curve that gives a meaningful boost even at low demand levels while compressing the response at high demand.
+9. Monitor the automation traces to verify sensible flow temperature values before relying on it. The log shows the `P=` component of the demand adjustment.
 
 ## Files
 

@@ -5,8 +5,8 @@ blueprint:
     illuminance (lux). Uses the radiator nonlinearity exponent (0.78) from the
     Vaillant/Kühne heat curves, but without coupling to any single room
     temperature, ideal for multi-zone houses where each zone has its own
-    thermostat
-    cacasd
+    thermostat.
+
     On sunny days, the flow temperature is reduced to prevent overheating from
     solar gain through windows.
 
@@ -201,18 +201,18 @@ blueprint:
           unit_of_measurement: "×"
           mode: slider
 
-    # ── Heating demand — PI controller ─────────────────────────────────────
+    # ── Heating demand — P controller ──────────────────────────────────────
     heating_demand_sensor:
       name: "Total Heating Demand Sensor (optional)"
-      description: "Sensor reporting total heating demand (0-100). Drives the PI controller that adjusts flow temperature. Leave empty to disable demand-based adjustment."
+      description: "Sensor reporting total heating demand (0-100). Drives the P controller that adjusts flow temperature. Leave empty to disable demand-based adjustment."
       default: ""
       selector:
         entity:
           domain: sensor
 
     heating_demand_neutral:
-      name: "PI Neutral Point"
-      description: "Demand value that produces zero P/I adjustment. Below this, the P-term reduces flow temp and the I-term decays; above it, P-term increases flow temp and I-term charges."
+      name: "P Neutral Point"
+      description: "Demand value that produces zero P adjustment. Below this, the P-term reduces flow temp; above it, the P-term increases flow temp."
       default: 3
       selector:
         number:
@@ -253,50 +253,6 @@ blueprint:
           min: 1
           max: 30
           step: 1
-          unit_of_measurement: "°C"
-          mode: slider
-
-    demand_integral_helper:
-      name: "Demand I-Term Accumulator (input_number)"
-      description: "An input_number helper that stores the integral (I) demand offset (-max to +max). Create one with min=-15, max=15, step=0.1. Leave empty to disable the I-term (P-only mode). Positive = sustained over-demand boosting flow; negative = sustained under-demand reducing flow."
-      default: ""
-      selector:
-        entity:
-          domain: input_number
-
-    demand_integral_charge_rate:
-      name: "I-Term Rate"
-      description: "How fast the I-term moves per unit of demand deviation from neutral, per minute (°C/unit/min). Scales with error magnitude: larger deviations charge faster. At 0.05 with deviation=5, the rate is 0.25°C/min → reaches 5°C cap in ~20 min. Now updates only on the periodic timer so the rate is predictable."
-      default: 0.05
-      selector:
-        number:
-          min: 0.01
-          max: 1.0
-          step: 0.01
-          unit_of_measurement: "°C/(unit·min)"
-          mode: slider
-
-    demand_integral_decay_rate:
-      name: "I-Term Decay Rate (at neutral)"
-      description: "How fast the I-term decays toward zero when demand equals neutral (°C per minute). Provides a slow return to baseline even when demand sits right at neutral. At 0.1, a 2°C accumulator takes ~20 min to reach zero."
-      default: 0.1
-      selector:
-        number:
-          min: 0.01
-          max: 1.0
-          step: 0.01
-          unit_of_measurement: "°C/min"
-          mode: slider
-
-    demand_integral_max:
-      name: "Max I-Offset (absolute)"
-      description: "Hard cap on the integral (I) accumulator in both directions. The I-term is clamped to [-max, +max]. Limits how much the I-term can boost or reduce flow temperature."
-      default: 5
-      selector:
-        number:
-          min: 1
-          max: 15
-          step: 0.5
           unit_of_measurement: "°C"
           mode: slider
 
@@ -351,15 +307,6 @@ trigger:
     for:
       minutes: 5
 
-  # React to heating demand changes (debounced — wait 10 min of stable value)
-  # Demand is still read every run; this just prevents the demand sensor
-  # from triggering excessively frequent re-evaluations.
-  - platform: state
-    entity_id: !input heating_demand_sensor
-    id: demand_change
-    for:
-      minutes: 5
-
 condition: []
 
 action:
@@ -369,7 +316,6 @@ action:
       outdoor_lux_entity: !input outdoor_lux_sensor
       heating_demand_entity: !input heating_demand_sensor
       solar_accum_entity: !input solar_accumulator_helper
-      demand_integral_entity: !input demand_integral_helper
       boiler_climate_entity: !input boiler_climate
       boiler_number: !input boiler_number_entity
       use_number_mode: "{{ boiler_number | default('', true) | length > 0 }}"
@@ -411,7 +357,7 @@ action:
           1
         {% endif %}
 
-      # Heating demand — PI controller parameters
+      # Heating demand — P controller parameters
       demand_neutral: !input heating_demand_neutral
       demand_rate: !input heating_demand_rate
       demand_exponent: !input heating_demand_exponent
@@ -434,29 +380,6 @@ action:
         {% set shaped = abs_dev ** exp %}
         {% set raw_offset = sign * gain * shaped %}
         {{ [[-1 * (demand_max_p_offset | float), raw_offset] | max, demand_max_p_offset | float] | min | round(1) }}
-
-      # Heating demand — I-term parameters
-      demand_i_charge_rate: !input demand_integral_charge_rate
-      demand_i_decay_rate: !input demand_integral_decay_rate
-      demand_i_max: !input demand_integral_max
-      demand_i_prev: >-
-        {% if demand_integral_entity | default('', true) | length > 0
-           and states(demand_integral_entity) not in ['unavailable', 'unknown', ''] %}
-          {{ states(demand_integral_entity) | float(0) }}
-        {% else %}
-          0
-        {% endif %}
-      demand_i_dt: >-
-        {% if demand_integral_entity | default('', true) | length > 0 %}
-          {% set last = state_attr(demand_integral_entity, 'last_updated') or state_attr(demand_integral_entity, 'last_changed') %}
-          {% if last %}
-            {{ ((now() - last).total_seconds() / 60) | round(2) }}
-          {% else %}
-            1
-          {% endif %}
-        {% else %}
-          0
-        {% endif %}
 
       # Output clamp
       flow_max: !input max_flow_temp
@@ -493,28 +416,7 @@ action:
         {% set new_val = solar_accum_prev | float + charge - decay %}
         {{ [0, [new_val, max_solar_offset | float] | min] | max | round(1) }}
 
-      # Demand I-term accumulator: deviation-scaled + constant decay toward zero
-      # Charge pushes I-term proportional to (demand - neutral).
-      # Decay always pulls I-term toward zero at a constant rate.
-      # When demand drops below neutral, both forces reduce the I-term together.
-      demand_i_offset: >-
-        {% if demand_integral_entity | default('', true) | length == 0 %}
-          0
-        {% else %}
-          {% set dt = [demand_i_dt | float, 30] | min %}
-          {% set deviation = demand_raw | float - demand_neutral | float %}
-          {% set charge = deviation * demand_i_charge_rate | float * dt %}
-          {% set decay = demand_i_decay_rate | float * dt %}
-          {% set prev = demand_i_prev | float %}
-          {% if prev > 0 %}
-            {% set new_val = [prev + charge - decay, 0] | max %}
-          {% elif prev < 0 %}
-            {% set new_val = [prev + charge + decay, 0] | min %}
-          {% else %}
-            {% set new_val = prev + charge %}
-          {% endif %}
-          {{ [(-1 * demand_i_max | float), [new_val, demand_i_max | float] | min] | max | round(1) }}
-        {% endif %}
+
 
   # ── Write solar accumulator back to helper (only on periodic trigger) ───
   - if:
@@ -527,25 +429,10 @@ action:
         data:
           value: "{{ solar_offset }}"
 
-  # ── Write demand I-term accumulator back to helper (only on periodic trigger) ─
-  - if:
-      - condition: and
-        conditions:
-          - condition: trigger
-            id: periodic
-          - condition: template
-            value_template: "{{ demand_integral_entity | default('', true) | length > 0 }}"
-    then:
-      - service: input_number.set_value
-        target:
-          entity_id: "{{ demand_integral_entity }}"
-        data:
-          value: "{{ demand_i_offset }}"
-
   - variables:
-      # PI demand offset applied to base flow
+      # P demand offset applied to base flow
       demand_adjusted_flow: >-
-        {{ (base_flow | float + demand_p_offset | float + demand_i_offset | float) | round(1) }}
+        {{ (base_flow | float + demand_p_offset | float) | round(1) }}
       # Raw target before clamping (used to detect "no real demand")
       target_flow_raw: >-
         {{ (demand_adjusted_flow | float - solar_offset | float) | round(1) }}
@@ -660,7 +547,7 @@ action:
             Weather Comp: Outdoor={{ t_out }}°C (on<{{ t_on }}°C, off≥{{ t_off }}°C),
             Lux={{ lux }}(raw={{ lux_raw }},x={{ lux_mult }}),
             SolarAccum={{ solar_offset }}°C(prev={{ solar_accum_prev }},dt={{ solar_dt_min }}min,lux_frac={{ lux_fraction }},+{{ (lux_fraction | float * solar_charge | float * [solar_dt_min | float, 30] | min) | round(2) }},-{{ (solar_decay | float * [solar_dt_min | float, 30] | min) if lux_fraction | float == 0 else 0 }}),
-            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(P={{ demand_p_offset }}°C,I={{ demand_i_offset }}°C,demand={{ demand_raw }},neutral={{ demand_neutral }},rate={{ demand_rate }}),
+            Base={{ base_flow }}°C, DemandAdj={{ demand_adjusted_flow }}°C(P={{ demand_p_offset }}°C,demand={{ demand_raw }},neutral={{ demand_neutral }},rate={{ demand_rate }}),
             MaxClamp={{ flow_max }}°C, Prev={{ current_setpoint }}°C, Δ={{ (target_flow | int - current_setpoint | int) | abs }}°C
             → Flow target={{ target_flow }}°C
           level: info
