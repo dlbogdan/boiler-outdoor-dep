@@ -438,14 +438,10 @@ action:
         data:
           value: "{{ solar_offset }}"
 
-  # ── Write P-offset to monitor helper (only on periodic trigger) ─────────
+  # ── Write P-offset to monitor helper (every run) ─────────────────────────
   - if:
-      - condition: and
-        conditions:
-          - condition: trigger
-            id: periodic
-          - condition: template
-            value_template: "{{ demand_p_offset_entity | default('', true) | length > 0 }}"
+      - condition: template
+        value_template: "{{ demand_p_offset_entity | default('', true) | length > 0 }}"
     then:
       - service: input_number.set_value
         data:
