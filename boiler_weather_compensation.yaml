@@ -223,14 +223,25 @@ blueprint:
 
     heating_demand_rate:
       name: "P-Gain (°C per demand unit)"
-      description: "Proportional gain: immediate °C of flow temperature offset per unit of demand deviation from neutral. E.g. 0.1 means demand 10 above neutral → +1°C instant offset."
+      description: "Proportional gain applied after the power-law exponent. Final P-offset = gain × |deviation|^exponent × sign(deviation). With gain=2, exponent=0.4: demand 0.4 above neutral → +1.4°C; demand 7 above → +4.4°C."
       default: 0.1
       selector:
         number:
           min: 0.05
-          max: 1.0
+          max: 5.0
           step: 0.05
           unit_of_measurement: "°C/unit"
+          mode: slider
+
+    heating_demand_exponent:
+      name: "P-Term Exponent"
+      description: "Power-law exponent for the P-term. 1.0 = linear (standard). <1 = logarithmic-like (boosts low demand, compresses high). 0.4 recommended: demand 0.4 → 73% of demand 1.0's offset. 0.5 = square root. 0.1 = nearly flat."
+      default: 1.0
+      selector:
+        number:
+          min: 0.1
+          max: 1.0
+          step: 0.05
           mode: slider
 
     max_demand_offset:
@@ -403,9 +414,10 @@ action:
       # Heating demand — PI controller parameters
       demand_neutral: !input heating_demand_neutral
       demand_rate: !input heating_demand_rate
+      demand_exponent: !input heating_demand_exponent
       demand_max_p_offset: !input max_demand_offset
 
-      # Heating demand — P-term (proportional offset from neutral)
+      # Heating demand — P-term (power-law proportional offset from neutral)
       demand_raw: >-
         {% if heating_demand_entity | default('', true) | length > 0
            and states(heating_demand_entity) not in ['unavailable', 'unknown', ''] %}
@@ -413,7 +425,15 @@ action:
         {% else %}
           {{ demand_neutral }}
         {% endif %}
-      demand_p_offset: "{{ [[-1 * demand_max_p_offset | float, ((demand_raw | float - demand_neutral | float) * demand_rate | float)] | max, demand_max_p_offset | float] | min | round(1) }}"
+      demand_p_offset: >-
+        {% set dev = demand_raw | float - demand_neutral | float %}
+        {% set abs_dev = dev | abs %}
+        {% set sign = 1 if dev >= 0 else -1 %}
+        {% set exp = demand_exponent | float %}
+        {% set gain = demand_rate | float %}
+        {% set shaped = abs_dev ** exp %}
+        {% set raw_offset = sign * gain * shaped %}
+        {{ [[-1 * (demand_max_p_offset | float), raw_offset] | max, demand_max_p_offset | float] | min | round(1) }}
 
       # Heating demand — I-term parameters
       demand_i_charge_rate: !input demand_integral_charge_rate
