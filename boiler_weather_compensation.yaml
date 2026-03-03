@@ -86,13 +86,25 @@ blueprint:
           mode: slider
 
     min_flow_temp:
-      name: "Minimum Flow Temperature"
-      description: "Hard lower limit (safety floor) for the output flow temperature (°C). Does not affect the shape of the heat curve."
+      name: "Flow Temp - Heating Off"
+      description: "When the calculated flow temperature drops to or below this, heating turns off (°C). Must be lower than 'Flow Temp - Heating On' to create a hysteresis dead zone. Also acts as the hard floor for the output flow temperature."
       default: 25
       selector:
         number:
           min: 15
           max: 40
+          step: 1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    min_flow_temp_on:
+      name: "Flow Temp - Heating On"
+      description: "When the calculated flow temperature rises above this, heating turns back on (°C). Must be higher than 'Flow Temp - Heating Off'. The gap between them is the dead zone — prevents toggling when solar gain or demand fluctuations push flow temp near the cutoff."
+      default: 36
+      selector:
+        number:
+          min: 20
+          max: 50
           step: 1
           unit_of_measurement: "°C"
           mode: slider
@@ -348,6 +360,7 @@ action:
       flow_design: !input design_flow_temp
       curve_base: !input curve_base_temp
       flow_min: !input min_flow_temp
+      flow_min_on: !input min_flow_temp_on
       t_off: !input heating_off_outdoor_temp
       t_on: !input heating_on_outdoor_temp
 
@@ -490,12 +503,11 @@ action:
         {% endif %}
       current_mode: "{{ states(boiler_climate_entity) }}"
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
-      # Should we turn off? (outdoor warm enough OR calculated flow ≤ minimum)
+      # Should we turn off? (outdoor warm enough OR calculated flow ≤ off-threshold)
       should_heat_off: "{{ t_out | float >= t_off | float or target_flow_raw | float <= flow_min | float }}"
-      # Should we turn on? (outdoor cold enough AND calculated flow is above minimum —
-      # prevents toggle when it's cold but solar gain makes heating pointless)
-      should_heat_on: "{{ t_out | float < t_on | float and target_flow_raw | float > flow_min | float }}"
-      # Dead zone: between t_on and t_off → maintain current state
+      # Should we turn on? (outdoor cold enough AND calculated flow above on-threshold)
+      should_heat_on: "{{ t_out | float < t_on | float and target_flow_raw | float > flow_min_on | float }}"
+      # Dead zone: between t_on/t_off OR between flow_min/flow_min_on → maintain current state
       in_dead_zone: "{{ not should_heat_off and not should_heat_on }}"
       # Calculated flow too low → treat like outdoor-warm-enough
       flow_below_min: "{{ target_flow_raw | float <= flow_min | float }}"
