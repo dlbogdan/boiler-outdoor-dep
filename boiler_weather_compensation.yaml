@@ -46,7 +46,7 @@ blueprint:
       default: ""
       selector:
         entity:
-          domain: number
+          domain: input_number
 
     # ── Heat curve anchor points ──────────────────────────────────────────
     design_outdoor_temp:
@@ -83,6 +83,17 @@ blueprint:
           max: 40
           step: 1
           unit_of_measurement: "°C"
+          mode: slider
+
+    radiator_exponent:
+      name: "Radiator Exponent"
+      description: "Heat curve nonlinearity exponent. Derived from the radiator heat output law Q ∝ ΔT^n (EN 442: n≈1.3 for panel radiators, so b=1/n≈0.78). Lower values lift flow temps at mild outdoor temps without changing the design point. 0.78 = Vaillant/Kühne default (panel radiators). Try 0.72–0.75 if the warm end feels too cold."
+      default: 0.78
+      selector:
+        number:
+          min: 0.70
+          max: 0.85
+          step: 0.01
           mode: slider
 
     min_flow_temp:
@@ -407,8 +418,8 @@ action:
       # Output clamp
       flow_max: !input max_flow_temp
 
-      # Radiator nonlinearity exponent (convection ΔT^1.3 → inverse ≈ 0.78)
-      b: 0.78
+      # Radiator nonlinearity exponent (from input)
+      b: !input radiator_exponent
 
   # ── Compute flow temperature ────────────────────────────────────────────
   - variables:
@@ -575,7 +586,7 @@ action:
           - condition: template
             value_template: "{{ use_number_mode }}"
         then:
-          - service: number.set_value
+          - service: input_number.set_value
             target:
               entity_id: "{{ boiler_number }}"
             data:
