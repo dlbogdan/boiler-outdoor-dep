@@ -534,9 +534,10 @@ action:
         {% if should_heat_off and current_mode != 'off' %}true
         {% elif should_heat_on and current_mode == 'off' %}true
         {% else %}false{% endif %}
-      # In dead zone while off → suppress updates entirely (stay off)
+      # In dead zone while off → suppress updates unless setpoint needs resetting to off-value
       dead_zone_hold: "{{ in_dead_zone and current_mode == 'off' }}"
-      should_update: "{{ not dead_zone_hold and (mode_change == 'true' or change_big_enough) }}"
+      needs_off_setpoint: "{{ dead_zone_hold and use_number_mode and current_setpoint | int != 20 }}"
+      should_update: "{{ needs_off_setpoint or (not dead_zone_hold and (mode_change == 'true' or change_big_enough)) }}"
 
   # ── Skip if no meaningful change ─────────────────────────────────────
   - condition: template
@@ -602,15 +603,24 @@ action:
                 Weather Comp: Calculated flow {{ target_flow_raw }}°C ≤ min {{ flow_min }}°C → no demand, heating OFF
               level: info
 
-      # Dead zone: between t_on and t_off while currently off → stay off
+      # Dead zone: between t_on and t_off while currently off → stay off, but ensure setpoint is at off-value
       - conditions:
           - condition: template
             value_template: "{{ in_dead_zone and current_mode == 'off' }}"
         sequence:
+          - if:
+              - condition: template
+                value_template: "{{ needs_off_setpoint }}"
+            then:
+              - service: input_number.set_value
+                target:
+                  entity_id: "{{ boiler_number }}"
+                data:
+                  value: 20
           - service: system_log.write
             data:
               message: >-
-                Weather Comp: Outdoor {{ t_out }}°C in dead zone ({{ t_on }}-{{ t_off }}°C), currently off → staying OFF
+                Weather Comp: Outdoor {{ t_out }}°C in dead zone ({{ t_on }}-{{ t_off }}°C), currently off → staying OFF (setpoint reset: {{ needs_off_setpoint }})
               level: info
 
     # Otherwise → set calculated flow temperature
