@@ -527,6 +527,19 @@ action:
       should_heat_on: "{{ t_out | float < t_on | float and target_flow_raw | float > flow_min_on | float }}"
       # Dead zone: between t_on/t_off OR between flow_min/flow_min_on → maintain current state
       in_dead_zone: "{{ not should_heat_off and not should_heat_on }}"
+      # Reason for dead zone (for logging)
+      dead_zone_reason: >-
+        {% if not should_heat_off and not should_heat_on %}
+          {% if t_out | float >= t_on | float and t_out | float < t_off | float %}
+            outdoor temp {{ t_out }}°C in dead zone ({{ t_on }}-{{ t_off }}°C)
+          {% elif t_out | float < t_on | float and target_flow_raw | float <= flow_min_on | float %}
+            outdoor temp {{ t_out }}°C < {{ t_on }}°C but calculated flow {{ target_flow_raw }}°C ≤ flow-on threshold {{ flow_min_on }}°C (solar offset: {{ solar_offset }}°C, P-offset: {{ demand_p_offset }}°C)
+          {% else %}
+            outdoor temp {{ t_out }}°C, flow {{ target_flow_raw }}°C — no clear on/off signal
+          {% endif %}
+        {% else %}
+          not in dead zone
+        {% endif %}
       # Calculated flow too low → treat like outdoor-warm-enough
       flow_below_min: "{{ target_flow_raw | float <= flow_min | float }}"
       # Mode change (off → heat or heat → off) always goes through
@@ -620,7 +633,7 @@ action:
           - service: system_log.write
             data:
               message: >-
-                Weather Comp: Outdoor {{ t_out }}°C in dead zone ({{ t_on }}-{{ t_off }}°C), currently off → staying OFF (setpoint reset: {{ needs_off_setpoint }})
+                Weather Comp: Dead zone hold — {{ dead_zone_reason }} → staying OFF (setpoint reset: {{ needs_off_setpoint }})
               level: info
 
     # Otherwise → set calculated flow temperature
