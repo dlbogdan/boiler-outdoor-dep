@@ -566,7 +566,7 @@ action:
                 target:
                   entity_id: "{{ boiler_number }}"
                 data:
-                  value: "{{ flow_min | int }}"
+                  value: 20
           - service: system_log.write
             data:
               message: >-
@@ -595,7 +595,7 @@ action:
                 target:
                   entity_id: "{{ boiler_number }}"
                 data:
-                  value: "{{ flow_min | int }}"
+                  value: 20
           - service: system_log.write
             data:
               message: >-
@@ -610,7 +610,7 @@ action:
           - service: system_log.write
             data:
               message: >-
-                Weather Comp: Outdoor {{ t_out }}°C in dead zone ({{ t_on }}–{{ t_off }}°C), currently off → staying OFF
+                Weather Comp: Outdoor {{ t_out }}°C in dead zone ({{ t_on }}-{{ t_off }}°C), currently off → staying OFF
               level: info
 
     # Otherwise → set calculated flow temperature
