@@ -4,6 +4,8 @@ A Home Assistant **blueprint** that automatically adjusts boiler flow temperatur
 
 All sensors and the boiler entity are selected via the UI with proper entity pickers — no YAML editing required.
 
+> **Standalone microcontroller port:** This project also includes a full [architecture specification](pico-standalone-architecture.md) and a detailed [logic and algorithm reference](microcontroller-logic-spec.md) for porting the control logic to a Raspberry Pi Pico 2W (or similar MCU) that talks directly to the boiler via OpenTherm — no Home Assistant required.
+
 ## How it works
 
 ### Heat Curve (Anchor-Point Model)
@@ -227,10 +229,15 @@ The blueprint automation logs all decisions to `system_log`. To see current valu
 | File | Purpose |
 |------|---------|
 | `boiler_weather_compensation.yaml` | **Blueprint** — import this into Home Assistant |
-| `legacy/package_version.yaml` | Legacy package (standalone, uses helpers) |
+| `maintain-otgw-setpoint.yaml` | Helper automation — re-sends the CH setpoint to an OpenTherm Gateway every 30 s (required because OTGW forgets overrides) |
+| `microcontroller-logic-spec.md` | **Detailed logic & algorithm spec** — everything an LLM (or human) needs to write a standalone MCU firmware that replicates this blueprint |
+| `pico-standalone-architecture.md` | Hardware wiring, software module layout, and memory budget for a Pico 2W port |
+| `legacy/package_version.yaml` | Legacy HA package (standalone, uses helpers — superseded by the blueprint) |
 
 ## References
 
 - [Vaillant Heat Pump Controls: Part 1 - The Heat Curves](https://protonsforbreakfast.wordpress.com/2024/10/16/vaillant-heat-pump-controls-part-1-the-heat-curves/)
 - [Part 3: Formulas and Spreadsheet](https://protonsforbreakfast.wordpress.com/2024/10/18/vaillant-heat-pump-controls-part-3-formulas-and-spreadsheet/)
 - [André Kühne's formula derivation](https://community.openenergymonitor.org/t/vaillant-arotherm-owners-thread/21891/281)
+- [OpenTherm Protocol Specification v2.2](https://ihormelnyk.com/opentherm_library) — message format, data IDs, Manchester encoding
+- [DIYLESS OpenTherm Adapter](https://diyless.com/product/opentherm-adapter) — reference hardware for OT ↔ MCU interface

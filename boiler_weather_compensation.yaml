@@ -523,8 +523,8 @@ action:
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
       # Should we turn off? (outdoor warm enough OR calculated flow ≤ off-threshold)
       should_heat_off: "{{ t_out | float >= t_off | float or target_flow_raw | float <= flow_min | float }}"
-      # Should we turn on? (outdoor cold enough AND calculated flow above on-threshold)
-      should_heat_on: "{{ t_out | float < t_on | float and target_flow_raw | float > flow_min_on | float }}"
+      # Should we turn on? (outdoor cold enough AND calculated flow above on-threshold AND demand present if sensor configured)
+      should_heat_on: "{{ t_out | float < t_on | float and target_flow_raw | float > flow_min_on | float and (heating_demand_entity | default('', true) | length == 0 or demand_raw | float > demand_neutral | float) }}"
       # Dead zone: between t_on/t_off OR between flow_min/flow_min_on → maintain current state
       in_dead_zone: "{{ not should_heat_off and not should_heat_on }}"
       # Reason for dead zone (for logging)
