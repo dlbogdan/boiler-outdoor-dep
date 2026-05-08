@@ -518,7 +518,7 @@ action:
         {% if use_climate_mode %}
           {{ states(boiler_climate_entity) }}
         {% else %}
-          {% if states(boiler_number) | float(0) <= flow_min | float %}off{% else %}heat{% endif %}
+          {% if states(boiler_number) | float(0) <= 20 %}off{% else %}heat{% endif %}
         {% endif %}
       change_big_enough: "{{ (target_flow | int - current_setpoint | int) | abs >= min_change | int }}"
       # Should we turn off? (outdoor warm enough OR calculated flow ≤ off-threshold)
